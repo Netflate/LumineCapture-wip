@@ -30,6 +30,20 @@ cargo run --release
 
 That is the current setup. It is not the final user-facing installation story.
 
+### Current limitations
+
+- Save path is hardcoded to a `Pictures/screenshots/...` pattern.
+- Screenshots can overwrite each other if they are taken within the same minute.
+- Saving cannot yet be disabled or customized.
+- The overlay implementation is still tied to the current Wayland SHM approach.
+- Some desktop-specific paths are still prototypes, not final decisions.
+
+## Comparison (Flameshot vs LumineCapture vs Spectacle)
+<img width="800" height="450" alt="applications_comparison" src="https://github.com/user-attachments/assets/92e4280a-72ad-4698-a6e5-1d246ebdabcf" />
+
+> **Note:** The video is slowed down to 30%. LumineCapture does not use the most suitable screen capturing protocol on KDE yet.
+
+
 ### What will improve later
 
 The long-term plan is to replace the current dev-only flow with proper packaging and easier system setup, especially for KDE users. The goal is to ship something closer to:
@@ -52,14 +66,6 @@ This is the honest picture of the project right now.
 | UI | Functional prototype | Cleaner UI, better animations, better polish |
 | Settings | Minimal / hardcoded | Proper configuration and flexibility |
 | Packaging | `git clone` + `cargo run` | RPM and better installation flow |
-
-### Current limitations
-
-- Save path is hardcoded to a `Pictures/screenshots/...` pattern.
-- Screenshots can overwrite each other if they are taken within the same minute.
-- Saving cannot yet be disabled or customized.
-- The overlay implementation is still tied to the current Wayland SHM approach.
-- Some desktop-specific paths are still prototypes, not final decisions.
 
 ## Architecture
 
