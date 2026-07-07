@@ -63,10 +63,10 @@ pub fn render_frame(req: &mut RenderRequest) {
         );
     }
 
-    if req.is_mag_monitor {
-        if let Some(mag) = req.magnifier {
-            magnifier::draw_magnifier(req.canvas, req.base, (mag.pos.0 as f32, mag.pos.1 as f32));
-        }
+    if req.is_mag_monitor
+        && let Some(mag) = req.magnifier
+    {
+        magnifier::draw_magnifier(req.canvas, req.base, (mag.pos.0 as f32, mag.pos.1 as f32));
     }
 
     if let Some(tb) = req.toolbar.as_mut()
@@ -77,7 +77,7 @@ pub fn render_frame(req: &mut RenderRequest) {
 }
 
 // ***************************/
-//// SELECTION + DIMMING  ////
+/// SELECTION + DIMMING  ////
 // **************************/
 pub fn init_dimming(dimmed: &mut Pixmap, base: &Pixmap, selection: &Option<Rect>) {
     dimmed.data_mut().copy_from_slice(base.data());
@@ -138,17 +138,18 @@ fn draw_dimming(canvas: &mut Pixmap, selection: &Option<Rect>, w: u32, h: u32) {
                 Rect::from_xywh(sel.right(), sel.top(), w as f32 - sel.right(), sel.height()),
             ];
             for rect in rects {
-                if let Some(r) = rect {
-                    if r.width() > 0.0 && r.height() > 0.0 {
-                        let path = PathBuilder::from_rect(r);
-                        canvas.fill_path(
-                            &path,
-                            &paint,
-                            tiny_skia::FillRule::Winding,
-                            Transform::identity(),
-                            None,
-                        );
-                    }
+                if let Some(r) = rect
+                    && r.width() > 0.0
+                    && r.height() > 0.0
+                {
+                    let path = PathBuilder::from_rect(r);
+                    canvas.fill_path(
+                        &path,
+                        &paint,
+                        tiny_skia::FillRule::Winding,
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
         }
@@ -263,7 +264,7 @@ pub fn rebuild_annotations_layer(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
     text_editors: &mut HashMap<u64, Editor<'static>>,
-    active_text_id: Option<u64>,   
+    active_text_id: Option<u64>,
 ) {
     layer.fill(tiny_skia::Color::TRANSPARENT);
 

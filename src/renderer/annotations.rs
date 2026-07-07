@@ -1,11 +1,14 @@
 use super::paths::{normalized_rect, oval_path};
-use crate::types::annotations::{Annotation, AnnotationShape, HANDLE_PAD, SHADOW_COLOR, SHADOW_WIDTH_BONUS};
 use crate::tools::text::render_text_annotation;
+use crate::types::annotations::{
+    Annotation, AnnotationShape, HANDLE_PAD, SHADOW_COLOR, SHADOW_WIDTH_BONUS,
+};
 
-use cosmic_text::{Buffer, FontSystem, SwashCache, SwashContent, Metrics, Shaping, Attrs, Editor};
+use cosmic_text::{Attrs, Buffer, Editor, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
 use std::collections::HashMap;
 use tiny_skia::{
-    Color, Paint, PathBuilder, Pixmap, PixmapPaint, PremultipliedColorU8, Rect, Stroke, Transform, LineCap, LineJoin, FillRule,
+    Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapPaint,
+    PremultipliedColorU8, Rect, Stroke, Transform,
 };
 
 pub fn draw_annotation(
@@ -16,7 +19,7 @@ pub fn draw_annotation(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
     text_editors: &mut HashMap<u64, Editor<'static>>,
-    active_text_id: Option<u64>,   
+    active_text_id: Option<u64>,
 ) {
     match &ann.shape {
         AnnotationShape::Arrow { start, end } => {
@@ -42,8 +45,15 @@ pub fn draw_annotation(
             let is_editing = active_text_id == Some(ann.id);
             if let Some(editor) = text_editors.get_mut(&ann.id) {
                 let mut pixmap_mut = canvas.as_mut();
-                render_text_annotation(ann, editor, font_system, swash_cache,
-                    &mut pixmap_mut, offset, is_editing);
+                render_text_annotation(
+                    ann,
+                    editor,
+                    font_system,
+                    swash_cache,
+                    &mut pixmap_mut,
+                    offset,
+                    is_editing,
+                );
             }
         }
         AnnotationShape::NumeratedArrow { start, end, number } => {
@@ -88,10 +98,7 @@ fn draw_arrow(
     let head_len = (stroke_width * 4.0).max(12.0).min(len * 0.6);
     let head_width = head_len * 0.55;
 
-    let line_end = (
-        end.0 - ux * head_len * 0.7,
-        end.1 - uy * head_len * 0.7,
-    );
+    let line_end = (end.0 - ux * head_len * 0.7, end.1 - uy * head_len * 0.7);
 
     let mut pb = PathBuilder::new();
     pb.move_to(start.0, start.1);
@@ -142,7 +149,15 @@ fn draw_rect(
 ) {
     let transform = Transform::from_translate(-offset.0, -offset.1);
     let path = PathBuilder::from_rect(*rect);
-    stroke_with_shadow(canvas, &path, color, stroke_width, LineCap::Butt, LineJoin::Miter, transform);
+    stroke_with_shadow(
+        canvas,
+        &path,
+        color,
+        stroke_width,
+        LineCap::Butt,
+        LineJoin::Miter,
+        transform,
+    );
 }
 
 fn draw_circle(
@@ -160,7 +175,15 @@ fn draw_circle(
     let ry = rect.height() / 2.0;
 
     if let Some(path) = oval_path(cx, cy, rx, ry) {
-        stroke_with_shadow(canvas, &path, color, stroke_width, LineCap::Butt, LineJoin::Round, transform);
+        stroke_with_shadow(
+            canvas,
+            &path,
+            color,
+            stroke_width,
+            LineCap::Butt,
+            LineJoin::Round,
+            transform,
+        );
     }
 }
 
@@ -179,7 +202,15 @@ fn draw_line(
     pb.line_to(end.0, end.1);
 
     if let Some(path) = pb.finish() {
-        stroke_with_shadow(canvas, &path, color, stroke_width, LineCap::Round, LineJoin::Round, transform);
+        stroke_with_shadow(
+            canvas,
+            &path,
+            color,
+            stroke_width,
+            LineCap::Round,
+            LineJoin::Round,
+            transform,
+        );
     }
 }
 
@@ -201,7 +232,15 @@ fn draw_pen(
         pb.line_to(p.0, p.1);
     }
     if let Some(path) = pb.finish() {
-        stroke_with_shadow(canvas, &path, color, stroke_width, LineCap::Round, LineJoin::Round, transform);
+        stroke_with_shadow(
+            canvas,
+            &path,
+            color,
+            stroke_width,
+            LineCap::Round,
+            LineJoin::Round,
+            transform,
+        );
     }
 }
 
@@ -351,8 +390,8 @@ pub fn draw_text_buffer(
             let physical = glyph.physical((0., 0.), 1.0);
 
             if let Some(image) = swash_cache.get_image(font_system, physical.cache_key) {
-                let width = image.placement.width as u32;
-                let height = image.placement.height as u32;
+                let width = image.placement.width;
+                let height = image.placement.height;
 
                 if width == 0 || height == 0 {
                     continue;
@@ -360,37 +399,33 @@ pub fn draw_text_buffer(
 
                 let draw_x =
                     (x_start + physical.x as f32 + image.placement.left as f32 - offset.0) as i32;
-                let draw_y =
-                    (y_start + run.line_y as f32 - image.placement.top as f32 - offset.1) as i32;
+                let draw_y = (y_start + run.line_y - image.placement.top as f32 - offset.1) as i32;
 
-                match image.content {
-                    SwashContent::Mask => {
-                        if let Some(mut glyph_pixmap) = Pixmap::new(width, height) {
-                            let pixels = glyph_pixmap.pixels_mut();
+                if image.content == SwashContent::Mask
+                    && let Some(mut glyph_pixmap) = Pixmap::new(width, height)
+                {
+                    let pixels = glyph_pixmap.pixels_mut();
 
-                            for (i, mask_alpha) in image.data.iter().enumerate() {
-                                let a_f32 = (*mask_alpha as f32 / 255.0) * color.alpha();
-                                let a_u8 = (a_f32 * 255.0) as u8;
+                    for (i, mask_alpha) in image.data.iter().enumerate() {
+                        let a_f32 = (*mask_alpha as f32 / 255.0) * color.alpha();
+                        let a_u8 = (a_f32 * 255.0) as u8;
 
-                                let pr = (color.red() * a_f32 * 255.0) as u8;
-                                let pg = (color.green() * a_f32 * 255.0) as u8;
-                                let pb = (color.blue() * a_f32 * 255.0) as u8;
+                        let pr = (color.red() * a_f32 * 255.0) as u8;
+                        let pg = (color.green() * a_f32 * 255.0) as u8;
+                        let pb = (color.blue() * a_f32 * 255.0) as u8;
 
-                                pixels[i] = PremultipliedColorU8::from_rgba(pr, pg, pb, a_u8)
-                                    .unwrap_or(PremultipliedColorU8::TRANSPARENT);
-                            }
-
-                            canvas.draw_pixmap(
-                                draw_x,
-                                draw_y,
-                                glyph_pixmap.as_ref(),
-                                &PixmapPaint::default(),
-                                Transform::identity(),
-                                None,
-                            );
-                        }
+                        pixels[i] = PremultipliedColorU8::from_rgba(pr, pg, pb, a_u8)
+                            .unwrap_or(PremultipliedColorU8::TRANSPARENT);
                     }
-                    _ => {}
+
+                    canvas.draw_pixmap(
+                        draw_x,
+                        draw_y,
+                        glyph_pixmap.as_ref(),
+                        &PixmapPaint::default(),
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
         }
@@ -461,41 +496,23 @@ fn draw_numerated_arrow(
         );
 
         let mut pb = PathBuilder::new();
-        pb.move_to(end.0, end.1); 
+        pb.move_to(end.0, end.1);
         pb.line_to(base_left.0, base_left.1);
         pb.line_to(base_right.0, base_right.1);
         pb.close();
 
         if let Some(path) = pb.finish() {
             canvas.stroke_path(&path, &shadow_paint, &shadow_stroke, transform, None);
-            canvas.fill_path(
-                &path,
-                &stroke_paint,
-                FillRule::Winding,
-                transform,
-                None,
-            );
+            canvas.fill_path(&path, &stroke_paint, FillRule::Winding, transform, None);
         }
     }
 
     if let Some(circle) = oval_path(start.0, start.1, circle_radius, circle_radius) {
         canvas.stroke_path(&circle, &shadow_paint, &shadow_stroke, transform, None);
 
-        canvas.fill_path(
-            &circle,
-            &fill_paint,
-            FillRule::Winding,
-            transform,
-            None,
-        );
+        canvas.fill_path(&circle, &fill_paint, FillRule::Winding, transform, None);
 
-        canvas.stroke_path(
-            &circle,
-            &stroke_paint,
-            &stroke,
-            transform,
-            None,
-        );
+        canvas.stroke_path(&circle, &stroke_paint, &stroke, transform, None);
     }
 
     let digits = number.to_string().len();
@@ -511,10 +528,7 @@ fn draw_numerated_arrow(
 
     let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_height));
 
-    buffer.set_size(
-        Some(circle_radius * 2.0),
-        Some(circle_radius * 2.0),
-    );
+    buffer.set_size(Some(circle_radius * 2.0), Some(circle_radius * 2.0));
 
     buffer.set_text(
         &number.to_string(),

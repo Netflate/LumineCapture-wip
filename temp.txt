@@ -1,0 +1,3740 @@
+diff --git a/src/app.rs b/src/app.rs
+index acd8b95..b399f2c 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -1,34 +1,41 @@
+ use crate::backend::{ScreenOverlay, initialize_capture, initialize_clipboard, initialize_overlay};
+-use crate::types::{DamageRect, MAG_FRAME_INTERVAL, MagnifierState, MonitorFrame, MouseButton, OverlayEvent, Placement, PointerState, SelectionEdges, SelectionState, SpecialKey};
+-use crate::types::toolbar::{TOOLBAR_HEIGHT, TOOLBAR_OFFSET, TOOLBAR_PADDING, Toolbar, ToolbarAnimation, ToolbarAction, ToolbarButton, ToolbarItem, ToolbarSide};
++use crate::editor::EditorState;
+ use crate::renderer::{self};
+-use crate::utils::{global_point_to_local, encode_png, save_to_file, get_overlapping_monitors};
+-use crate::tools::{Tool, dispatch_button, dispatch_deactivate, dispatch_move, dispatch_key, dispatch_text};
+ use crate::tools::selection::{global_selection_to_local, selection_edges_for_monitor};
+-use crate::editor::EditorState;
++use crate::tools::{
++    Tool, dispatch_button, dispatch_deactivate, dispatch_key, dispatch_move, dispatch_text,
++};
+ use crate::types::icons;
+-use tiny_skia::{Pixmap, PixmapPaint, Transform, Rect};
+-use std::time::{Instant};
++use crate::types::toolbar::{
++    TOOLBAR_HEIGHT, TOOLBAR_OFFSET, TOOLBAR_PADDING, Toolbar, ToolbarAction, ToolbarAnimation,
++    ToolbarButton, ToolbarItem, ToolbarSide,
++};
++use crate::types::{
++    DamageRect, MAG_FRAME_INTERVAL, MagnifierState, MonitorFrame, MouseButton, OverlayEvent,
++    Placement, PointerState, SelectionEdges, SelectionState, SpecialKey,
++};
++use crate::utils::{encode_png, get_overlapping_monitors, global_point_to_local, save_to_file};
++use cosmic_text::{FontSystem, SwashCache};
+ use std::collections::HashMap;
++use std::time::Instant;
++use tiny_skia::{Pixmap, PixmapPaint, Rect, Transform};
+ use usvg::Tree;
+-use cosmic_text::{FontSystem, SwashCache};
+ 
+ // small note while wip, to notice if it becamwe slower
+-// (Background thread) : svg parsed in 0ms 
++// (Background thread) : svg parsed in 0ms
+ // after capturing 67ms
+ // after initialising base_pixmaps, which are original frames in Vec<Pixmap> 72ms
+ // after initialising dimmed canvas, same size dimmed frames 72ms
+ // after saving base screenshot 73ms
+ // after initialising overlay and showing it 114ms
+ 
+-// (Background thread) : svg parsed in 0ms 
++// (Background thread) : svg parsed in 0ms
+ // after capturing 67ms
+ // after initialising base_pixmaps, which are original frames in Vec<Pixmap> 72ms
+ // after initialising dimmed canvas, same size dimmed frames 72ms
+ // after saving base screenshot 73ms
+ // after initialising overlay and showing it 114ms
+ 
+-
+ // ************************* //
+ //      ENTRY POINT          //
+ // ************************* //
+@@ -38,9 +45,7 @@ pub async fn make_screenshot(
+ ) -> Result<(), Box<dyn std::error::Error>> {
+     let t0 = std::time::Instant::now();
+     let icons_handle = std::thread::spawn(load_icons_cache);
+-    let text_handle = std::thread::spawn(|| { 
+-            (SwashCache::new(), FontSystem::new()) 
+-        });
++    let text_handle = std::thread::spawn(|| (SwashCache::new(), FontSystem::new()));
+ 
+     let conn = wayland_.unwrap();
+     let capture = initialize_capture();
+@@ -51,25 +56,31 @@ pub async fn make_screenshot(
+     let clipboard = initialize_clipboard(conn);
+ 
+     let base_pixmaps: Vec<Pixmap> = build_base_pixmap(&screenshots.frames);
+-    println!("after initialising base_pixmaps, which are original frames in Vec<Pixmap> {}ms", t0.elapsed().as_millis());
++    println!(
++        "after initialising base_pixmaps, which are original frames in Vec<Pixmap> {}ms",
++        t0.elapsed().as_millis()
++    );
+     let (canvas, dimmed, annotations_layer) = build_layers(&base_pixmaps);
+-    println!("after initialising dimmed canvas, same size dimmed frames {}ms", t0.elapsed().as_millis());
++    println!(
++        "after initialising dimmed canvas, same size dimmed frames {}ms",
++        t0.elapsed().as_millis()
++    );
+     let placements = build_placements(&screenshots.frames);
+-    
++
+     drop(screenshots);
+     // 4 may 2026 : ~75mb memory usage while screenshoting on kde linux with 2 hd monitors
+     // not ideal, could be resolved with rendering in shm itself
+-    
++
+     let (swash_cache, font_system) = text_handle.join().expect("Failed to join text thread");
+     let icon_cache = icons_handle.join().expect("Failed to join icons thread");
+     let mut editor_state = EditorState {
+         base: base_pixmaps,
+-        canvas: canvas,
+-        dimmed: dimmed,
++        canvas,
++        dimmed,
+         selected_tool: Tool::Selection,
+         tool_active: false,
+         selection: SelectionState::default(),
+-        placements: placements,
++        placements,
+         drag_start: None,
+         pointer: PointerState::default(),
+         magnifier: None,
+@@ -88,10 +99,10 @@ pub async fn make_screenshot(
+         selected_annotation: None,
+         ann_drag: None,
+ 
+-        annotations_layer: annotations_layer,
++        annotations_layer,
+         annotations_dirty: false,
+-        font_system: font_system,
+-        swash_cache: swash_cache,
++        font_system,
++        swash_cache,
+         text_editors: HashMap::new(),
+         text_editing: None,
+ 
+@@ -99,10 +110,16 @@ pub async fn make_screenshot(
+         mod_shift: false,
+     };
+ 
+-    println!("after saving base screenshot {}ms", t0.elapsed().as_millis());
++    println!(
++        "after saving base screenshot {}ms",
++        t0.elapsed().as_millis()
++    );
+     overlay.present(&editor_state.placements)?.to_vec();
+     initial_paint(&mut editor_state, &mut overlay)?;
+-    println!("after initialising overlay and showing it {}ms", t0.elapsed().as_millis());
++    println!(
++        "after initialising overlay and showing it {}ms",
++        t0.elapsed().as_millis()
++    );
+ 
+     let mut dirty_mask: u32 = 0;
+     let mut selection_dirty = false;
+@@ -120,14 +137,25 @@ pub async fn make_screenshot(
+             let target_opacity = if tb.interferes { 0.1 } else { 1.0 };
+             (tb.opacity - target_opacity).abs() > 0.001
+         };
+-        let timeout = if editor_state.toolbar.anim.is_some() || opacity_animating { 16 } else { -1 };
++        let timeout = if editor_state.toolbar.anim.is_some() || opacity_animating {
++            16
++        } else {
++            -1
++        };
+ 
+         let ev = overlay.next_event(timeout)?;
+         match ev {
+             OverlayEvent::Tick => {}
+             OverlayEvent::EscapePressed => break,
+             OverlayEvent::PointerMove { monitor_idx, x, y } => {
+-                handle_pointer_move(&mut editor_state, monitor_idx, x, y, &mut dirty_mask, &mut selection_dirty);
++                handle_pointer_move(
++                    &mut editor_state,
++                    monitor_idx,
++                    x,
++                    y,
++                    &mut dirty_mask,
++                    &mut selection_dirty,
++                );
+             }
+             OverlayEvent::PointerButton { button, pressed } => {
+                 handle_pointer_button(&mut editor_state, button, pressed, &mut dirty_mask);
+@@ -150,7 +178,7 @@ pub async fn make_screenshot(
+                 handle_key_press(&mut editor_state, key, &mut dirty_mask);
+             }
+             OverlayEvent::ModifiersChanged { ctrl, shift } => {
+-                editor_state.mod_ctrl  = ctrl;
++                editor_state.mod_ctrl = ctrl;
+                 editor_state.mod_shift = shift;
+             }
+         }
+@@ -158,10 +186,9 @@ pub async fn make_screenshot(
+         tick_toolbar_anim(&mut editor_state, &mut dirty_mask);
+ 
+         if dirty_mask != 0 {
+-
+             if editor_state.annotations_dirty {
+                 let active_text_id = editor_state.text_editing.as_ref().map(|e| e.annotation_id);
+-                
++
+                 for i in 0..editor_state.base.len() {
+                     let offset = (
+                         editor_state.placements[i].position.0 as f32,
+@@ -175,17 +202,18 @@ pub async fn make_screenshot(
+                         offset,
+                         &mut editor_state.font_system,
+                         &mut editor_state.swash_cache,
+-                        &mut editor_state.text_editors,  
+-                        active_text_id,                  
++                        &mut editor_state.text_editors,
++                        active_text_id,
+                     );
+                 }
+             }
+ 
+             for i in 0..editor_state.base.len() {
+                 if is_dirty(dirty_mask, i) {
+-                    let is_mag_monitor = editor_state.magnifier
++                    let is_mag_monitor = editor_state
++                        .magnifier
+                         .as_ref()
+-                        .map_or(false, |m| m.monitor_idx == i);
++                        .is_some_and(|m| m.monitor_idx == i);
+ 
+                     let (local_sel, prev_local, edges) = selection_render_info(
+                         &editor_state.selection.zone,
+@@ -193,35 +221,48 @@ pub async fn make_screenshot(
+                         &editor_state.placements[i],
+                     );
+                     let dirty_rect = editor_state.monitor_dirty_rect(i, selection_dirty);
+-                    let damage: Option<DamageRect> = dirty_rect
+-                        .as_ref()
+-                        .and_then(|r| renderer::rect_bounds(r, editor_state.base[i].width(), editor_state.base[i].height()));
+-
+-                    if i == editor_state.toolbar.monitor_idx && !editor_state.toolbar.dirty {
+-                        if let Some(dirty) = dirty_rect.as_ref() {
+-                            let tb = &editor_state.toolbar;
+-                            let tb_rect = Rect::from_xywh(tb.position.0, tb.position.1, tb.size.0, TOOLBAR_HEIGHT);
+-                            if let Some(tb_r) = tb_rect {
+-                                let intersects = dirty.left() < tb_r.right() && dirty.right() > tb_r.left()
+-                                    && dirty.top() < tb_r.bottom() && dirty.bottom() > tb_r.top();
+-                                if intersects {
+-                                    editor_state.toolbar.dirty = true;
+-                                }
++                    let damage: Option<DamageRect> = dirty_rect.as_ref().and_then(|r| {
++                        renderer::rect_bounds(
++                            r,
++                            editor_state.base[i].width(),
++                            editor_state.base[i].height(),
++                        )
++                    });
++
++                    if i == editor_state.toolbar.monitor_idx
++                        && !editor_state.toolbar.dirty
++                        && let Some(dirty) = dirty_rect.as_ref()
++                    {
++                        let tb = &editor_state.toolbar;
++                        let tb_rect = Rect::from_xywh(
++                            tb.position.0,
++                            tb.position.1,
++                            tb.size.0,
++                            TOOLBAR_HEIGHT,
++                        );
++                        if let Some(tb_r) = tb_rect {
++                            let intersects = dirty.left() < tb_r.right()
++                                && dirty.right() > tb_r.left()
++                                && dirty.top() < tb_r.bottom()
++                                && dirty.bottom() > tb_r.top();
++                            if intersects {
++                                editor_state.toolbar.dirty = true;
+                             }
+                         }
+                     }
+ 
+-                    let toolbar = if i == editor_state.toolbar.monitor_idx && editor_state.toolbar.dirty {
+-                        Some(&mut editor_state.toolbar)
+-                    } else {
+-                        None
+-                    };
+-                    
++                    let toolbar =
++                        if i == editor_state.toolbar.monitor_idx && editor_state.toolbar.dirty {
++                            Some(&mut editor_state.toolbar)
++                        } else {
++                            None
++                        };
++
+                     let offset = (
+                         editor_state.placements[i].position.0 as f32,
+                         editor_state.placements[i].position.1 as f32,
+                     );
+-                    
++
+                     renderer::render_frame(&mut renderer::RenderRequest {
+                         canvas: &mut editor_state.canvas[i],
+                         base: &editor_state.base[i],
+@@ -236,7 +277,7 @@ pub async fn make_screenshot(
+                         toolbar,
+                         icons_cache: &editor_state.icon_cache,
+                         annotations_layer: &editor_state.annotations_layer[i],
+-                        offset : offset,
++                        offset,
+                     });
+ 
+                     overlay.update_frame(i, editor_state.canvas[i].data(), damage)?;
+@@ -261,7 +302,6 @@ pub async fn make_screenshot(
+     Ok(())
+ }
+ 
+-
+ // ************************* //
+ //      INITIALIZATION       //
+ // ************************* //
+@@ -272,8 +312,8 @@ fn build_base_pixmap(frames: &Vec<MonitorFrame>) -> Vec<Pixmap> {
+         .enumerate()
+         .map(|(monitor_idx, f)| {
+             let (src_w, src_h) = (f.pw_width, f.pw_height);
+-            let mut src_pixmap = Pixmap::new(src_w, src_h)
+-                .expect("Failed to create source Pixmap for monitor");
++            let mut src_pixmap =
++                Pixmap::new(src_w, src_h).expect("Failed to create source Pixmap for monitor");
+ 
+             let row_bytes = (src_w as usize) * 4;
+             let src_stride = f.pw_stride as usize;
+@@ -287,15 +327,14 @@ fn build_base_pixmap(frames: &Vec<MonitorFrame>) -> Vec<Pixmap> {
+             }
+ 
+             let needed = src_stride * (src_h as usize);
+-            let src = f
+-                .pixels
+-                .get(..needed)
+-                .unwrap_or_else(|| panic!(
++            let src = f.pixels.get(..needed).unwrap_or_else(|| {
++                panic!(
+                     "Not enough pixel data for monitor {}: have={} need={}",
+                     monitor_idx,
+                     f.pixels.len(),
+                     needed
+-                ));
++                )
++            });
+ 
+             for row in 0..(src_h as usize) {
+                 let src_off = row * src_stride;
+@@ -304,10 +343,8 @@ fn build_base_pixmap(frames: &Vec<MonitorFrame>) -> Vec<Pixmap> {
+                     .copy_from_slice(&src[src_off..src_off + row_bytes]);
+             }
+ 
+-            let (logical_w_i32, logical_h_i32) = f
+-                .info
+-                .size
+-                .unwrap_or((src_w as i32, src_h as i32));
++            let (logical_w_i32, logical_h_i32) =
++                f.info.size.unwrap_or((src_w as i32, src_h as i32));
+             let logical_w = logical_w_i32.max(1) as u32;
+             let logical_h = logical_h_i32.max(1) as u32;
+ 
+@@ -320,7 +357,8 @@ fn build_base_pixmap(frames: &Vec<MonitorFrame>) -> Vec<Pixmap> {
+             let sx = logical_w as f32 / src_w as f32;
+             let sy = logical_h as f32 / src_h as f32;
+             logical_pixmap.draw_pixmap(
+-                0, 0,
++                0,
++                0,
+                 src_pixmap.as_ref(),
+                 &PixmapPaint::default(),
+                 Transform::from_row(sx, 0.0, 0.0, sy, 0.0, 0.0),
+@@ -340,7 +378,7 @@ fn build_layers(base_pixmaps: &[Pixmap]) -> (Vec<Pixmap>, Vec<Pixmap>, Vec<Pixma
+     for p in base_pixmaps {
+         let w = p.width();
+         let h = p.height();
+-        
++
+         canvases.push(Pixmap::new(w, h).expect("Failed to create canvas"));
+         dimmed_layers.push(Pixmap::new(w, h).expect("Failed to create dimmed"));
+         annotation_layers.push(Pixmap::new(w, h).expect("Failed to create annotations"));
+@@ -350,10 +388,14 @@ fn build_layers(base_pixmaps: &[Pixmap]) -> (Vec<Pixmap>, Vec<Pixmap>, Vec<Pixma
+ }
+ 
+ fn build_placements(frames: &Vec<MonitorFrame>) -> Vec<Placement> {
+-    frames.iter()
++    frames
++        .iter()
+         .map(|stream| Placement {
+             position: stream.info.position.unwrap_or((0, 0)),
+-            size: stream.info.size.unwrap_or((stream.pw_width as i32, stream.pw_height as i32)),
++            size: stream
++                .info
++                .size
++                .unwrap_or((stream.pw_width as i32, stream.pw_height as i32)),
+         })
+         .collect()
+ }
+@@ -364,13 +406,18 @@ fn load_icons_cache() -> HashMap<ToolbarButton, Tree> {
+     let opt = usvg::Options::default();
+ 
+     for item in crate::types::toolbar::TOOLBAR_ITEMS {
+-        let ToolbarItem::Button(button) = item else { continue };
++        let ToolbarItem::Button(button) = item else {
++            continue;
++        };
+         let (svg_str, _) = icons::get_svg(button);
+-        let tree = Tree::from_str(svg_str, &opt)
+-            .expect("Critical: Failed to parse embedded SVG icon");
++        let tree =
++            Tree::from_str(svg_str, &opt).expect("Critical: Failed to parse embedded SVG icon");
+         cache.insert(*button, tree);
+     }
+-    println!("(Background thread) : svg parsed in {}ms ", t0.elapsed().as_millis());
++    println!(
++        "(Background thread) : svg parsed in {}ms ",
++        t0.elapsed().as_millis()
++    );
+     cache
+ }
+ 
+@@ -410,7 +457,6 @@ fn initial_paint(
+     Ok(())
+ }
+ 
+-
+ // ************************* //
+ //      INPUT HANDLING       //
+ // ************************* //
+@@ -427,13 +473,23 @@ fn handle_pointer_move(
+         editor_state.placements[monitor_idx].position.0 as f64 + x,
+         editor_state.placements[monitor_idx].position.1 as f64 + y,
+     );
+-    let (current_monitor_idx, local_x, local_y) = global_point_to_local(
+-        &editor_state.placements, global, monitor_idx, (x, y),
++    let (current_monitor_idx, local_x, local_y) =
++        global_point_to_local(&editor_state.placements, global, monitor_idx, (x, y));
++    update_pointer(
++        editor_state,
++        current_monitor_idx,
++        (local_x, local_y),
++        global,
+     );
+-    update_pointer(editor_state, current_monitor_idx, (local_x, local_y), global);
+     update_magnifier(editor_state, dirty_mask);
+-    dispatch_move(editor_state.selected_tool, editor_state, global, selection_dirty, dirty_mask);
+-    apply_damage_rects(editor_state, dirty_mask); 
++    dispatch_move(
++        editor_state.selected_tool,
++        editor_state,
++        global,
++        selection_dirty,
++        dirty_mask,
++    );
++    apply_damage_rects(editor_state, dirty_mask);
+     update_toolbar(editor_state, dirty_mask);
+ }
+ 
+@@ -443,34 +499,41 @@ fn handle_pointer_button(
+     pressed: bool,
+     dirty_mask: &mut u32,
+ ) {
+-    if matches!(button, MouseButton::Left) && pressed {
+-        if let Some(tb_button) = toolbar_hit_test(&editor_state.toolbar, editor_state.pointer.local) {
+-            editor_state.toolbar.dirty = true;
+-            mark_dirty(dirty_mask, editor_state.toolbar.monitor_idx);
+-
+-            if let Some(ToolbarItem::Button(button)) = editor_state.toolbar.items.get(tb_button) {
+-                match button {
+-                    ToolbarButton::Tool(tool) => {
+-                        dispatch_deactivate(editor_state.selected_tool, editor_state, dirty_mask);
+-                        editor_state.selected_tool = *tool;
+-                        editor_state.toolbar.selected = Some(tb_button);
+-                    }
+-                    ToolbarButton::Action(ToolbarAction::SideChange) => {
+-                        editor_state.toolbar.current_side = match editor_state.toolbar.current_side {
+-                            ToolbarSide::Top => ToolbarSide::Bottom,
+-                            ToolbarSide::Bottom => ToolbarSide::Top,
+-                        };
+-                    }
++    if matches!(button, MouseButton::Left)
++        && pressed
++        && let Some(tb_button) = toolbar_hit_test(&editor_state.toolbar, editor_state.pointer.local)
++    {
++        editor_state.toolbar.dirty = true;
++        mark_dirty(dirty_mask, editor_state.toolbar.monitor_idx);
++
++        if let Some(ToolbarItem::Button(button)) = editor_state.toolbar.items.get(tb_button) {
++            match button {
++                ToolbarButton::Tool(tool) => {
++                    dispatch_deactivate(editor_state.selected_tool, editor_state, dirty_mask);
++                    editor_state.selected_tool = *tool;
++                    editor_state.toolbar.selected = Some(tb_button);
++                }
++                ToolbarButton::Action(ToolbarAction::SideChange) => {
++                    editor_state.toolbar.current_side = match editor_state.toolbar.current_side {
++                        ToolbarSide::Top => ToolbarSide::Bottom,
++                        ToolbarSide::Bottom => ToolbarSide::Top,
++                    };
+                 }
+-                editor_state.toolbar.dirty = true;
+-                update_toolbar(editor_state, dirty_mask);
+             }
+-            return;
++            editor_state.toolbar.dirty = true;
++            update_toolbar(editor_state, dirty_mask);
+         }
++        return;
+     }
+ 
+-    dispatch_button(editor_state.selected_tool, editor_state, button, pressed, dirty_mask);
+-    apply_damage_rects(editor_state, dirty_mask); 
++    dispatch_button(
++        editor_state.selected_tool,
++        editor_state,
++        button,
++        pressed,
++        dirty_mask,
++    );
++    apply_damage_rects(editor_state, dirty_mask);
+ 
+     if matches!(button, MouseButton::Left) && !pressed {
+         update_toolbar(editor_state, dirty_mask);
+@@ -488,10 +551,10 @@ fn update_pointer(
+ 
+ fn update_magnifier(editor_state: &mut EditorState, dirty_mask: &mut u32) {
+     let now = Instant::now();
+-    if let Some(last) = editor_state.last_mag_update {
+-        if now.duration_since(last) < MAG_FRAME_INTERVAL {
+-            return;
+-        }
++    if let Some(last) = editor_state.last_mag_update
++        && now.duration_since(last) < MAG_FRAME_INTERVAL
++    {
++        return;
+     }
+     editor_state.last_mag_update = Some(now);
+ 
+@@ -510,11 +573,13 @@ fn update_magnifier(editor_state: &mut EditorState, dirty_mask: &mut u32) {
+         editor_state.prev_magnifier = None;
+     }
+ 
+-    editor_state.magnifier = Some(MagnifierState { monitor_idx, pos: local });
++    editor_state.magnifier = Some(MagnifierState {
++        monitor_idx,
++        pos: local,
++    });
+     mark_dirty(dirty_mask, monitor_idx);
+ }
+ 
+-
+ // ************************* //
+ //         TOOLBAR           //
+ // ************************* //
+@@ -528,7 +593,7 @@ fn update_toolbar(editor_state: &mut EditorState, dirty_mask: &mut u32) {
+         editor_state.toolbar.toolbar_width(),
+     );
+     let from_y = match editor_state.toolbar.current_side {
+-        ToolbarSide::Top    => -TOOLBAR_HEIGHT,
++        ToolbarSide::Top => -TOOLBAR_HEIGHT,
+         ToolbarSide::Bottom => placement.size.1 as f32,
+     };
+     let interferes = toolbar_interferes(editor_state);
+@@ -573,7 +638,8 @@ fn tick_toolbar_anim(editor_state: &mut EditorState, dirty_mask: &mut u32) {
+ 
+     // smooth opacity animation
+     let now = Instant::now();
+-    let dt = tb.last_tick
++    let dt = tb
++        .last_tick
+         .map(|t| now.duration_since(t).as_secs_f32())
+         .unwrap_or(0.016);
+     tb.last_tick = Some(now);
+@@ -617,18 +683,34 @@ fn toolbar_interferes(editor_state: &EditorState) -> bool {
+     let x = (mon_w - tb_width) / 2.0;
+ 
+     let active_rect = match tb.current_side {
+-        ToolbarSide::Top    => (x, TOOLBAR_OFFSET, x + tb_width, TOOLBAR_OFFSET + TOOLBAR_HEIGHT),
+-        ToolbarSide::Bottom => (x, mon_h - TOOLBAR_OFFSET - TOOLBAR_HEIGHT, x + tb_width, mon_h - TOOLBAR_OFFSET),
++        ToolbarSide::Top => (
++            x,
++            TOOLBAR_OFFSET,
++            x + tb_width,
++            TOOLBAR_OFFSET + TOOLBAR_HEIGHT,
++        ),
++        ToolbarSide::Bottom => (
++            x,
++            mon_h - TOOLBAR_OFFSET - TOOLBAR_HEIGHT,
++            x + tb_width,
++            mon_h - TOOLBAR_OFFSET,
++        ),
+     };
+ 
+-    let Some(sel) = editor_state.selection.zone
++    let Some(sel) = editor_state
++        .selection
++        .zone
+         .as_ref()
+         .and_then(|sel| global_selection_to_local(sel, placement))
+-    else { return false };
++    else {
++        return false;
++    };
+ 
+-    active_rect.0 < sel.right()  && active_rect.2 > sel.left() &&
+-    active_rect.1 < sel.bottom() && active_rect.3 > sel.top()  &&
+-    editor_state.tool_active  // if selection isn't active toolbar won't be transparent
++    active_rect.0 < sel.right()
++        && active_rect.2 > sel.left()
++        && active_rect.1 < sel.bottom()
++        && active_rect.3 > sel.top()
++        && editor_state.tool_active // if selection isn't active toolbar won't be transparent
+ }
+ 
+ fn toolbar_position(side: ToolbarSide, placement: &Placement, tb_width: f32) -> (f32, f32) {
+@@ -636,7 +718,7 @@ fn toolbar_position(side: ToolbarSide, placement: &Placement, tb_width: f32) ->
+     let mon_h = placement.size.1 as f32;
+     let x = (mon_w - tb_width) / 2.0;
+     let y = match side {
+-        ToolbarSide::Top    => TOOLBAR_OFFSET,
++        ToolbarSide::Top => TOOLBAR_OFFSET,
+         ToolbarSide::Bottom => mon_h - TOOLBAR_OFFSET - TOOLBAR_HEIGHT,
+     };
+     (x, y)
+@@ -666,7 +748,6 @@ pub fn toolbar_hit_test(toolbar: &Toolbar, local: (f64, f64)) -> Option<usize> {
+     None
+ }
+ 
+-
+ // ************************* //
+ //      RENDER HELPERS       //
+ // ************************* //
+@@ -711,11 +792,14 @@ fn render_final(editor_state: &mut EditorState) -> Vec<u8> {
+ 
+     let mut out = Pixmap::new(sel_w, sel_h).unwrap();
+     for (i, placement) in editor_state.placements.iter().enumerate() {
+-        if (mask & (1 << i)) == 0 { continue; }
++        if (mask & (1 << i)) == 0 {
++            continue;
++        }
+         let dst_x = placement.position.0 - sel_left;
+         let dst_y = placement.position.1 - sel_top;
+         out.draw_pixmap(
+-            dst_x, dst_y,
++            dst_x,
++            dst_y,
+             editor_state.base[i].as_ref(),
+             &PixmapPaint::default(),
+             Transform::identity(),
+@@ -737,14 +821,13 @@ fn render_final(editor_state: &mut EditorState) -> Vec<u8> {
+             &mut editor_state.font_system,
+             &mut editor_state.swash_cache,
+             &mut editor_state.text_editors,
+-            None,          
++            None,
+         );
+     }
+ 
+     encode_png(&out)
+ }
+ 
+-
+ // ************************* //
+ //           UTILS           //
+ // ************************* //
+@@ -757,7 +840,7 @@ fn is_dirty(mask: u32, idx: usize) -> bool {
+     (mask & (1 << idx)) != 0
+ }
+ 
+-// some parts of the code still identify dirty monitors themselves 
++// some parts of the code still identify dirty monitors themselves
+ // that will be fixed
+ fn apply_damage_rects(editor_state: &mut EditorState, dirty_mask: &mut u32) {
+     for rect in &editor_state.damage_rects {
+@@ -765,14 +848,14 @@ fn apply_damage_rects(editor_state: &mut EditorState, dirty_mask: &mut u32) {
+         *dirty_mask |= mask;
+     }
+ }
+-// text 
++// text
+ 
+ fn handle_text_input(editor_state: &mut EditorState, ch: char, dirty_mask: &mut u32) {
+     dispatch_text(editor_state.selected_tool, editor_state, ch, dirty_mask);
+-    apply_damage_rects(editor_state, dirty_mask); 
++    apply_damage_rects(editor_state, dirty_mask);
+ }
+ 
+ fn handle_key_press(editor_state: &mut EditorState, key: SpecialKey, dirty_mask: &mut u32) {
+     dispatch_key(editor_state.selected_tool, editor_state, key, dirty_mask);
+-    apply_damage_rects(editor_state, dirty_mask); 
+-}
+\ No newline at end of file
++    apply_damage_rects(editor_state, dirty_mask);
++}
+diff --git a/src/backend.rs b/src/backend.rs
+index cea2977..eafb34a 100644
+--- a/src/backend.rs
++++ b/src/backend.rs
+@@ -17,7 +17,6 @@ pub trait ClipboardProvider {
+     fn copy_image_to_clipboard(&self, png_data: Vec<u8>) -> Result<(), Box<dyn std::error::Error>>;
+ }
+ 
+-
+ #[async_trait]
+ pub trait ScreenOverlay {
+     fn present(
+@@ -39,15 +38,13 @@ pub fn initialize_overlay(conn: Connection) -> Box<dyn ScreenOverlay> {
+ 
+     match desktop.as_str() {
+         "GNOME" => {
+-            // TODO: won't work on gnome anyways :p will be implemented in the future 
+-            Box::new(wayland::overlay::WaylandOverlay::new(conn)) as Box<dyn ScreenOverlay>
+-        }
+-        _ => {
++            // TODO: won't work on gnome anyways :p will be implemented in the future
+             Box::new(wayland::overlay::WaylandOverlay::new(conn)) as Box<dyn ScreenOverlay>
+         }
++        _ => Box::new(wayland::overlay::WaylandOverlay::new(conn)) as Box<dyn ScreenOverlay>,
+     }
+ }
+ 
+ pub fn initialize_clipboard(_: Connection) -> Box<dyn ClipboardProvider> {
+     Box::new(wayland::clipboard::ext_data_control::ClipboardMethod)
+-}
+\ No newline at end of file
++}
+diff --git a/src/backend/wayland/capture/stream.rs b/src/backend/wayland/capture/stream.rs
+index b4909e4..afec13d 100644
+--- a/src/backend/wayland/capture/stream.rs
++++ b/src/backend/wayland/capture/stream.rs
+@@ -138,7 +138,7 @@ pub fn capture_frame(
+         .map_err(|e| format!("Failed to receive frame from thread: {}", e).into())
+ }
+ 
+-fn build_format_pod<'a>(buffer: &'a mut Vec<u8>) -> &'a Pod {
++fn build_format_pod(buffer: &mut Vec<u8>) -> &Pod {
+     use spa::pod::serialize::PodSerializer;
+     use spa::pod::{Object, Property, PropertyFlags, Value};
+     use spa::sys::*;
+diff --git a/src/backend/wayland/clipboard/ext_data_control.rs b/src/backend/wayland/clipboard/ext_data_control.rs
+index 5df540b..51c3d96 100644
+--- a/src/backend/wayland/clipboard/ext_data_control.rs
++++ b/src/backend/wayland/clipboard/ext_data_control.rs
+@@ -1,6 +1,6 @@
++use crate::backend::ClipboardProvider;
+ use std::io::Write;
+ use std::process::{Command, Stdio};
+-use crate::backend::ClipboardProvider;
+ 
+ pub struct ClipboardMethod;
+ 
+@@ -22,4 +22,4 @@ impl ClipboardProvider for ClipboardMethod {
+ 
+         Ok(())
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/backend/wayland/overlay.rs b/src/backend/wayland/overlay.rs
+index a1aa9bd..5a5e99a 100644
+--- a/src/backend/wayland/overlay.rs
++++ b/src/backend/wayland/overlay.rs
+@@ -10,7 +10,7 @@ use crate::backend::wayland::utils::surface::SurfaceData;
+ use crate::types::{DamageRect, Output, OverlayEvent, Placement};
+ 
+ use rustix::{
+-    event::{poll, PollFd, PollFlags},
++    event::{PollFd, PollFlags, poll},
+     time::Timespec,
+ };
+ use std::os::unix::io::AsFd;
+@@ -77,7 +77,7 @@ impl ScreenOverlay for WaylandOverlay {
+             }
+ 
+             // ── 2. create an overlay layer surface, above everything else   ──────────────────────────────
+-            // will be switched to usual force above window 
++            // will be switched to usual force above window
+             // at least for everything besides gnome
+ 
+             let layer_surface = rt.state.layer_shell.create_layer_surface(
+@@ -113,7 +113,7 @@ impl ScreenOverlay for WaylandOverlay {
+ 
+             rt.event_queue.roundtrip(&mut rt.state)?;
+ 
+-            // ── 3. allocate shared memory (shm) pixel buffers ─────────────────────────────────────────            
++            // ── 3. allocate shared memory (shm) pixel buffers ─────────────────────────────────────────
+             let pool = &mut rt.state.pool;
+             let shm_buffer = create_shm_buffer(pool, w, h)?;
+ 
+@@ -193,12 +193,12 @@ impl ScreenOverlay for WaylandOverlay {
+                 let _ = guard.read();
+             }
+             rt.event_queue.dispatch_pending(&mut rt.state)?;
+-            
++
+             if rt.state.pending_flush {
+                 rt.state.pending_flush = false;
+                 rt.event_queue.flush()?;
+             }
+-            
++
+             if let Some(ev) = rt.state.events.pop_front() {
+                 // optimization: coalesce sequential mouse move events.
+                 // we only care about the latest mouse coordinate in the event queue per frame
+@@ -211,7 +211,7 @@ impl ScreenOverlay for WaylandOverlay {
+                 }
+                 return Ok(ev);
+             }
+-            
++
+             // block and wait until the Wayland connection file descriptor has data available (poll)
+             let fd = rt.event_queue.as_fd();
+             let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+@@ -242,4 +242,4 @@ impl ScreenOverlay for WaylandOverlay {
+         self.runtime = Some(rt);
+         Ok(())
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/backend/wayland/overlay/state.rs b/src/backend/wayland/overlay/state.rs
+index 76fe822..2f7087f 100644
+--- a/src/backend/wayland/overlay/state.rs
++++ b/src/backend/wayland/overlay/state.rs
+@@ -1,28 +1,26 @@
++pub mod compositor_shm_layer;
++pub mod global;
+ pub mod keyboard;
++pub mod output;
+ pub mod pointer;
+ pub mod seat;
+-pub mod output;
+-pub mod compositor_shm_layer;
+-pub mod global;
+ 
+ use std::collections::HashMap;
+ use std::collections::VecDeque;
+ 
+ use crate::backend::wayland::utils::surface::SurfaceData;
+-use crate::types::{OverlayEvent, Output};
++use crate::types::{Output, OverlayEvent};
+ 
+ use wayland_client::globals::registry_queue_init;
+ use wayland_protocols::wp::{
+     fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
+-    viewporter::client::{wp_viewporter},
++    viewporter::client::wp_viewporter,
+ };
+ 
+-use wayland_client::{
+-    Connection, EventQueue,
+-};
++use wayland_client::{Connection, EventQueue};
+ use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
+ 
+-// new smithay 
++// new smithay
+ use smithay_client_toolkit::output::OutputState;
+ use smithay_client_toolkit::shm::Shm;
+ 
+@@ -33,9 +31,10 @@ pub struct OverlayState {
+     pub layer_shell: smithay_client_toolkit::shell::wlr_layer::LayerShell,
+     pub registry_state: smithay_client_toolkit::registry::RegistryState,
+     pub output_state: smithay_client_toolkit::output::OutputState,
+-    pub cursor_shape_manager: smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager,
++    pub cursor_shape_manager:
++        smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager,
+     pub seat: smithay_client_toolkit::seat::SeatState,
+-    pub pool: smithay_client_toolkit::shm::slot::SlotPool, 
++    pub pool: smithay_client_toolkit::shm::slot::SlotPool,
+     // ── wayland protocol ─────────────────────────────────────────────────────────
+     pub outputs: Vec<Output>,
+     pub frac: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+@@ -59,7 +58,6 @@ pub struct OverlayRunTime {
+     pub state: OverlayState,
+ }
+ 
+-
+ impl OverlayRunTime {
+     pub fn new(conn: &Connection) -> Result<Self, Box<dyn std::error::Error>> {
+         let (globals, mut event_queue) = registry_queue_init(conn)?;
+@@ -69,24 +67,45 @@ impl OverlayRunTime {
+         let registry_state = smithay_client_toolkit::registry::RegistryState::new(&globals);
+         let output_state = OutputState::new(&globals, &qh);
+         let shm = Shm::bind(&globals, &qh)?;
+-        let compositor_state = smithay_client_toolkit::compositor::CompositorState::bind(&globals, &qh)?;
+-        let layer_shell = smithay_client_toolkit::shell::wlr_layer::LayerShell::bind(&globals, &qh)?;
++        let compositor_state =
++            smithay_client_toolkit::compositor::CompositorState::bind(&globals, &qh)?;
++        let layer_shell =
++            smithay_client_toolkit::shell::wlr_layer::LayerShell::bind(&globals, &qh)?;
+         let seat = smithay_client_toolkit::seat::SeatState::new(&globals, &qh);
+-        let cursor_shape_manager = smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager::bind(&globals, &qh)?;
+-        
++        let cursor_shape_manager =
++            smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager::bind(
++                &globals, &qh,
++            )?;
++
+         let pool = smithay_client_toolkit::shm::slot::SlotPool::new(256 * 1024, &shm)?;
+-        
++
+         // ── other wayland globals ─────────────────────────────────────────────────────────────────────────
+-        let frac = globals.bind::<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ()).ok();
+-        let viewporter = globals.bind::<wp_viewporter::WpViewporter, _, _>(&qh, 1..=1, ()).ok();
+-    
++        let frac = globals
++            .bind::<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, _, _>(
++                &qh,
++                1..=1,
++                (),
++            )
++            .ok();
++        let viewporter = globals
++            .bind::<wp_viewporter::WpViewporter, _, _>(&qh, 1..=1, ())
++            .ok();
++
+         // ───── construction
+         let mut state = OverlayState::new(
+-            compositor_state, shm, layer_shell, registry_state, output_state, 
+-            cursor_shape_manager, seat, pool, frac, viewporter
++            compositor_state,
++            shm,
++            layer_shell,
++            registry_state,
++            output_state,
++            cursor_shape_manager,
++            seat,
++            pool,
++            frac,
++            viewporter,
+         );
+ 
+-        // two roundtrips: first gets globals 
++        // two roundtrips: first gets globals
+         // second waits for events update
+         event_queue.roundtrip(&mut state)?;
+         event_queue.roundtrip(&mut state)?;
+@@ -95,7 +114,6 @@ impl OverlayRunTime {
+     }
+ }
+ 
+-
+ // ── overlaystate initialization ─────────────────────────────────────────────────────────────────────
+ impl OverlayState {
+     pub fn new(
+@@ -121,7 +139,7 @@ impl OverlayState {
+             pool,
+             frac,
+             viewporter,
+-            
++
+             cursor_shape_device: None,
+             outputs: Vec::new(),
+             surfaces: HashMap::new(),
+@@ -135,4 +153,4 @@ impl OverlayState {
+             pointer_enter_serial: 0,
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/backend/wayland/overlay/state/compositor_shm_layer.rs b/src/backend/wayland/overlay/state/compositor_shm_layer.rs
+index 0435bf6..91d0e92 100644
+--- a/src/backend/wayland/overlay/state/compositor_shm_layer.rs
++++ b/src/backend/wayland/overlay/state/compositor_shm_layer.rs
+@@ -1,26 +1,63 @@
+ // ── compositor, shm and layer_shell (in the future) handlers ────────────────────────────────────
+ // just a reminder, its for graphical initialization:
+ // - wl_compositor: creating surfaces
+-// - wl_shm: deviding memory for transferring frame pixels 
++// - wl_shm: deviding memory for transferring frame pixels
+ // - zwlr_layer_shell_v1: not sure, will be necessary in creating windows
+ 
+-use smithay_client_toolkit::{delegate_compositor, delegate_shm, delegate_layer};
+ use smithay_client_toolkit::compositor::CompositorHandler;
+-use smithay_client_toolkit::shell::wlr_layer::{LayerShellHandler, LayerSurface, LayerSurfaceConfigure};
+-use smithay_client_toolkit::shm::{ShmHandler};
++use smithay_client_toolkit::shell::wlr_layer::{
++    LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
++};
++use smithay_client_toolkit::shm::ShmHandler;
++use smithay_client_toolkit::{delegate_compositor, delegate_layer, delegate_shm};
+ 
+-use wayland_client::{Connection, QueueHandle};
+ use wayland_client::protocol::{wl_output, wl_surface};
++use wayland_client::{Connection, QueueHandle};
+ 
+ use crate::backend::wayland::overlay::state::OverlayState;
+ 
+ // ── compositor ────────────────────────────────────────────────────────────────────────────────
+ impl CompositorHandler for OverlayState {
+-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
+-    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
+-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _time: u32) {}
+-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
++    fn scale_factor_changed(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_surface::WlSurface,
++        _: i32,
++    ) {
++    }
++    fn transform_changed(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_surface::WlSurface,
++        _: wl_output::Transform,
++    ) {
++    }
++    fn frame(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_surface::WlSurface,
++        _time: u32,
++    ) {
++    }
++    fn surface_enter(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_surface::WlSurface,
++        _: &wl_output::WlOutput,
++    ) {
++    }
++    fn surface_leave(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_surface::WlSurface,
++        _: &wl_output::WlOutput,
++    ) {
++    }
+ }
+ delegate_compositor!(OverlayState);
+ 
+@@ -34,7 +71,15 @@ delegate_shm!(OverlayState);
+ 
+ // ── layer ─────────────────────────────────────────────────────────────────────────────────────
+ impl LayerShellHandler for OverlayState {
+-    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _layer_surface: &LayerSurface, _configure: LayerSurfaceConfigure, _: u32) {}
++    fn configure(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _layer_surface: &LayerSurface,
++        _configure: LayerSurfaceConfigure,
++        _: u32,
++    ) {
++    }
+     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _layer_surface: &LayerSurface) {}
+ }
+ delegate_layer!(OverlayState);
+diff --git a/src/backend/wayland/overlay/state/global.rs b/src/backend/wayland/overlay/state/global.rs
+index b7cd88c..df3cae9 100644
+--- a/src/backend/wayland/overlay/state/global.rs
++++ b/src/backend/wayland/overlay/state/global.rs
+@@ -2,9 +2,9 @@
+ // these handlers allow us to use wayland protocols that SCTK doesn't provide
+ // we manually process events for things like fractional scaling and surface viewports
+ 
+-use smithay_client_toolkit::{delegate_registry, registry_handlers};
+-use smithay_client_toolkit::registry::ProvidesRegistryState;
+ use smithay_client_toolkit::output::OutputState;
++use smithay_client_toolkit::registry::ProvidesRegistryState;
++use smithay_client_toolkit::{delegate_registry, registry_handlers};
+ use wayland_client::{Connection, Dispatch, QueueHandle};
+ use wayland_protocols::wp::{
+     fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
+@@ -14,14 +14,14 @@ use wayland_protocols::wp::{
+ use crate::backend::wayland::overlay::state::OverlayState;
+ 
+ // ── registry handling ─────────────────────────────────────────────────────────────
+-// reminder: this tells sctk: "I'm willing to manage standard Wayland global 
++// reminder: this tells sctk: "I'm willing to manage standard Wayland global
+ // objects on my own using your registry tools"
+ 
+ impl ProvidesRegistryState for OverlayState {
+     fn registry(&mut self) -> &mut smithay_client_toolkit::registry::RegistryState {
+         &mut self.registry_state
+     }
+-    registry_handlers![OutputState]; 
++    registry_handlers![OutputState];
+ }
+ 
+ delegate_registry!(OverlayState);
+@@ -30,7 +30,14 @@ delegate_registry!(OverlayState);
+ // handles HiDPI support. The server tells us the monitor's scale factor,
+ // and update our internal state scale accordingly
+ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for OverlayState {
+-    fn event(state: &mut Self, _: &wp_fractional_scale_v1::WpFractionalScaleV1, event: wp_fractional_scale_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
++    fn event(
++        state: &mut Self,
++        _: &wp_fractional_scale_v1::WpFractionalScaleV1,
++        event: wp_fractional_scale_v1::Event,
++        _: &(),
++        _: &Connection,
++        _: &QueueHandle<Self>,
++    ) {
+         match event {
+             // wayland sends the scale factor as a fixed point integer (multiplied by 120)
+             // we divide by 120.0 to convert it into a usual floating point scale (1.0, 1.25, 2.0, etc)
+@@ -46,13 +53,37 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for OverlayState
+ // protocols are for scaling/cropping surfaces. Only use them to
+ // create objects (requests), so we don't need to handle any server events.
+ impl Dispatch<wp_viewporter::WpViewporter, ()> for OverlayState {
+-    fn event(_: &mut Self, _: &wp_viewporter::WpViewporter, _: wp_viewporter::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
++    fn event(
++        _: &mut Self,
++        _: &wp_viewporter::WpViewporter,
++        _: wp_viewporter::Event,
++        _: &(),
++        _: &Connection,
++        _: &QueueHandle<Self>,
++    ) {
++    }
+ }
+ 
+ impl Dispatch<wp_viewport::WpViewport, ()> for OverlayState {
+-    fn event(_: &mut Self, _: &wp_viewport::WpViewport, _: wp_viewport::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
++    fn event(
++        _: &mut Self,
++        _: &wp_viewport::WpViewport,
++        _: wp_viewport::Event,
++        _: &(),
++        _: &Connection,
++        _: &QueueHandle<Self>,
++    ) {
++    }
+ }
+ 
+ impl Dispatch<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, ()> for OverlayState {
+-    fn event(_: &mut Self, _: &wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, _: wp_fractional_scale_manager_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+-}
+\ No newline at end of file
++    fn event(
++        _: &mut Self,
++        _: &wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
++        _: wp_fractional_scale_manager_v1::Event,
++        _: &(),
++        _: &Connection,
++        _: &QueueHandle<Self>,
++    ) {
++    }
++}
+diff --git a/src/backend/wayland/overlay/state/keyboard.rs b/src/backend/wayland/overlay/state/keyboard.rs
+index c5bd170..d28efdd 100644
+--- a/src/backend/wayland/overlay/state/keyboard.rs
++++ b/src/backend/wayland/overlay/state/keyboard.rs
+@@ -1,16 +1,16 @@
+ // ── keyboard input handling ──────────────────────────────────────────────────
+ // handlers shortcuts using a two-tier approach:
+ // 1. first, checks 'Keysym' to match shortcuts by their actual letter/symbol
+-// 2. if not latin symbol matches (e.g, user is on a cyrillic layout), it falls 
++// 2. if not latin symbol matches (e.g, user is on a cyrillic layout), it falls
+ //    back to 'raw_code' to trigger the shortcut based on the physical key position
+ //
+-// TODO: it doesn't absolutyely corerctly works on latin keyboard, like 
+-//       azerty users will redo on both ctrl z and ctrl w, will be fixed later, who cares 
++// TODO: it doesn't absolutyely corerctly works on latin keyboard, like
++//       azerty users will redo on both ctrl z and ctrl w, will be fixed later, who cares
+ //       about these sublayouts users anyways
+ 
+ use smithay_client_toolkit::delegate_keyboard;
+ use smithay_client_toolkit::seat::keyboard::{
+-    KeyboardHandler, KeyEvent, Keysym, Modifiers, RepeatInfo,
++    KeyEvent, KeyboardHandler, Keysym, Modifiers, RepeatInfo,
+ };
+ use wayland_client::protocol::{wl_keyboard, wl_surface};
+ use wayland_client::{Connection, QueueHandle};
+@@ -19,14 +19,27 @@ use crate::backend::wayland::overlay::state::OverlayState;
+ use crate::types::{OverlayEvent, SpecialKey};
+ 
+ impl KeyboardHandler for OverlayState {
+-    fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
++    fn press_key(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_keyboard::WlKeyboard,
++        _: u32,
++        event: KeyEvent,
++    ) {
+         self.process_key(&event);
+     }
+-    fn repeat_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
++    fn repeat_key(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_keyboard::WlKeyboard,
++        _: u32,
++        event: KeyEvent,
++    ) {
+         self.process_key(&event);
+     }
+ 
+-
+     fn update_modifiers(
+         &mut self,
+         _: &Connection,
+@@ -44,47 +57,126 @@ impl KeyboardHandler for OverlayState {
+             shift: self.shift,
+         });
+     }
+-    
+-    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32, _: &[u32], _: &[Keysym]) {}
+-    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _event: KeyEvent) {}
+-    fn update_repeat_info( &mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _info: RepeatInfo) {}
+-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32) {}
+-}
+ 
+-delegate_keyboard!  (OverlayState);
++    fn enter(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_keyboard::WlKeyboard,
++        _: &wl_surface::WlSurface,
++        _: u32,
++        _: &[u32],
++        _: &[Keysym],
++    ) {
++    }
++    fn release_key(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_keyboard::WlKeyboard,
++        _: u32,
++        _event: KeyEvent,
++    ) {
++    }
++    fn update_repeat_info(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_keyboard::WlKeyboard,
++        _info: RepeatInfo,
++    ) {
++    }
++    fn leave(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: &wl_keyboard::WlKeyboard,
++        _: &wl_surface::WlSurface,
++        _: u32,
++    ) {
++    }
++}
+ 
++delegate_keyboard!(OverlayState);
+ 
+ impl OverlayState {
+     fn process_key(&mut self, event: &KeyEvent) {
+         match event.keysym {
+-            Keysym::Escape => { self.events.push_back(OverlayEvent::EscapePressed); return; }
+-            Keysym::BackSpace => { self.events.push_back(OverlayEvent::KeyPress(SpecialKey::Backspace)); return; }
+-            Keysym::Delete => { self.events.push_back(OverlayEvent::KeyPress(SpecialKey::Delete)); return; }
+-            Keysym::Return => { self.events.push_back(OverlayEvent::KeyPress(SpecialKey::Enter)); return; }
+-            Keysym::Left => { self.events.push_back(OverlayEvent::KeyPress(SpecialKey::Left)); return; }
+-            Keysym::Right => { self.events.push_back(OverlayEvent::KeyPress(SpecialKey::Right)); return; }
+-            Keysym::Up => { self.events.push_back(OverlayEvent::KeyPress(SpecialKey::Up)); return; }
+-            Keysym::Down => { self.events.push_back(OverlayEvent::KeyPress(SpecialKey::Down)); return; }
+-            Keysym::Home => { self.events.push_back(OverlayEvent::KeyPress(SpecialKey::Home)); return; }
+-            Keysym::End => { self.events.push_back(OverlayEvent::KeyPress(SpecialKey::End)); return; }
++            Keysym::Escape => {
++                self.events.push_back(OverlayEvent::EscapePressed);
++                return;
++            }
++            Keysym::BackSpace => {
++                self.events
++                    .push_back(OverlayEvent::KeyPress(SpecialKey::Backspace));
++                return;
++            }
++            Keysym::Delete => {
++                self.events
++                    .push_back(OverlayEvent::KeyPress(SpecialKey::Delete));
++                return;
++            }
++            Keysym::Return => {
++                self.events
++                    .push_back(OverlayEvent::KeyPress(SpecialKey::Enter));
++                return;
++            }
++            Keysym::Left => {
++                self.events
++                    .push_back(OverlayEvent::KeyPress(SpecialKey::Left));
++                return;
++            }
++            Keysym::Right => {
++                self.events
++                    .push_back(OverlayEvent::KeyPress(SpecialKey::Right));
++                return;
++            }
++            Keysym::Up => {
++                self.events
++                    .push_back(OverlayEvent::KeyPress(SpecialKey::Up));
++                return;
++            }
++            Keysym::Down => {
++                self.events
++                    .push_back(OverlayEvent::KeyPress(SpecialKey::Down));
++                return;
++            }
++            Keysym::Home => {
++                self.events
++                    .push_back(OverlayEvent::KeyPress(SpecialKey::Home));
++                return;
++            }
++            Keysym::End => {
++                self.events
++                    .push_back(OverlayEvent::KeyPress(SpecialKey::End));
++                return;
++            }
+             _ => {}
+         }
+ 
+         if self.ctrl {
+             // try matching by Keysym first (for standard layouts/shortcuts)
+             let matched_action = match event.keysym {
+-                Keysym::z | Keysym::Z => Some(if self.shift { OverlayEvent::Redo } else { OverlayEvent::Undo }),
++                Keysym::z | Keysym::Z => Some(if self.shift {
++                    OverlayEvent::Redo
++                } else {
++                    OverlayEvent::Undo
++                }),
+                 Keysym::y | Keysym::Y => Some(OverlayEvent::Redo),
+                 Keysym::s | Keysym::S => Some(OverlayEvent::SaveToClipboard),
+                 Keysym::a | Keysym::A => Some(OverlayEvent::KeyPress(SpecialKey::KeyA)),
+                 _ => None,
+             };
+             // fallback to raw physical scan codes (to support AZERTY/non-QWERTY layouts)
+-            let final_action = matched_action.or_else(|| match event.raw_code {
+-                44 => Some(if self.shift { OverlayEvent::Redo } else { OverlayEvent::Undo }), // 44 -> Z
+-                21 => Some(OverlayEvent::Redo),                                               // 21 -> Y
+-                31 => Some(OverlayEvent::SaveToClipboard),                                    // 31 -> S
+-                30 => Some(OverlayEvent::KeyPress(SpecialKey::KeyA)),                         // 30 -> A
++            let final_action = matched_action.or(match event.raw_code {
++                44 => Some(if self.shift {
++                    OverlayEvent::Redo
++                } else {
++                    OverlayEvent::Undo
++                }), // 44 -> Z
++                21 => Some(OverlayEvent::Redo),            // 21 -> Y
++                31 => Some(OverlayEvent::SaveToClipboard), // 31 -> S
++                30 => Some(OverlayEvent::KeyPress(SpecialKey::KeyA)), // 30 -> A
+                 _ => None,
+             });
+ 
+@@ -99,4 +191,4 @@ impl OverlayState {
+             }
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/backend/wayland/overlay/state/output.rs b/src/backend/wayland/overlay/state/output.rs
+index 91f72be..52aeaa9 100644
+--- a/src/backend/wayland/overlay/state/output.rs
++++ b/src/backend/wayland/overlay/state/output.rs
+@@ -1,21 +1,21 @@
+ // ── Output Management ────────────────────────────────────────────────────────
+ // A module for tracking connected outputs
+ //
+-// maintain an up to date list of 'Vec<Output>' inside 'OverlayState' to 
++// maintain an up to date list of 'Vec<Output>' inside 'OverlayState' to
+ // map them against our 'Placements'.
+ // rebuild_outputs method is called whenever any display configuration changes
+ 
+ use smithay_client_toolkit::delegate_output;
+ use smithay_client_toolkit::output::{OutputHandler, OutputState};
+-use wayland_client::{Connection, QueueHandle};
+ use wayland_client::protocol::wl_output;
++use wayland_client::{Connection, QueueHandle};
+ 
+ use crate::backend::wayland::overlay::state::OverlayState;
+ use crate::types::Output;
+ 
+ impl OutputHandler for OverlayState {
+-    fn output_state(&mut self) -> &mut OutputState { 
+-        &mut self.output_state 
++    fn output_state(&mut self) -> &mut OutputState {
++        &mut self.output_state
+     }
+ 
+     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+@@ -33,14 +33,16 @@ impl OverlayState {
+     /// Synchronizes our local 'outputs' list with the SCTK internal state
+     /// This is called whenever the compositor notifies us about ANY display changes
+     pub fn rebuild_outputs(&mut self) {
+-        self.outputs = self.output_state.outputs()
++        self.outputs = self
++            .output_state
++            .outputs()
+             .filter_map(|wl_output| {
+-                self.output_state.info(&wl_output).map(|info| {
+-                    Output { wl_output, info }
+-                })
++                self.output_state
++                    .info(&wl_output)
++                    .map(|info| Output { wl_output, info })
+             })
+             .collect();
+     }
+ }
+ 
+-delegate_output!(OverlayState);
+\ No newline at end of file
++delegate_output!(OverlayState);
+diff --git a/src/backend/wayland/overlay/state/pointer.rs b/src/backend/wayland/overlay/state/pointer.rs
+index 3fcaa38..3440051 100644
+--- a/src/backend/wayland/overlay/state/pointer.rs
++++ b/src/backend/wayland/overlay/state/pointer.rs
+@@ -1,15 +1,15 @@
+ // ── pointer input handling ───────────────────────────────────────────
+ // pointer mouvement, actions, and shape change
+ // use of 'pointer_frame', to group multiple mouse events in one cycle
+-// instead of sending them one by one 
++// instead of sending them one by one
+ 
+ use smithay_client_toolkit::delegate_pointer;
+-use smithay_client_toolkit::seat::pointer::{PointerHandler, PointerEvent, PointerEventKind};
+-use wayland_client::{Connection, QueueHandle};
++use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+ use wayland_client::protocol::wl_pointer;
++use wayland_client::{Connection, QueueHandle};
+ 
+ use crate::backend::wayland::overlay::state::OverlayState;
+-use crate::types::{OverlayEvent, MouseButton};
++use crate::types::{MouseButton, OverlayEvent};
+ 
+ impl PointerHandler for OverlayState {
+     fn pointer_frame(
+@@ -21,7 +21,9 @@ impl PointerHandler for OverlayState {
+     ) {
+         for event in events {
+             // searching on which surface (each surface correspond to one output) it occured
+-            let monitor_idx = self.surfaces.iter()
++            let monitor_idx = self
++                .surfaces
++                .iter()
+                 .find(|(_, sd)| sd.surface == event.surface)
+                 .map(|(id, _)| *id);
+ 
+@@ -34,7 +36,7 @@ impl PointerHandler for OverlayState {
+                     if let Some(device) = &self.cursor_shape_device {
+                         device.set_shape(serial, wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape::Crosshair);
+                     }
+-                    
++
+                     if let Some(idx) = monitor_idx {
+                         self.events.push_back(OverlayEvent::PointerMove {
+                             monitor_idx: idx,
+@@ -43,11 +45,11 @@ impl PointerHandler for OverlayState {
+                         });
+                     }
+                 }
+-                
++
+                 PointerEventKind::Leave { .. } => {
+                     self.pointer_surface_idx = None;
+                 }
+-                
++
+                 PointerEventKind::Motion { .. } => {
+                     if let Some(idx) = self.pointer_surface_idx {
+                         self.events.push_back(OverlayEvent::PointerMove {
+@@ -58,9 +60,10 @@ impl PointerHandler for OverlayState {
+                     }
+                 }
+ 
+-                PointerEventKind::Press { button, .. } | PointerEventKind::Release { button, .. } => {
++                PointerEventKind::Press { button, .. }
++                | PointerEventKind::Release { button, .. } => {
+                     let pressed = matches!(event.kind, PointerEventKind::Press { .. });
+-                    
++
+                     // linux input codes (BTN_LEFT=0x110, BTN_RIGHT=0x111, BTN_MIDDLE=0x112)
+                     let mb = match button {
+                         0x110 => MouseButton::Left,
+@@ -68,7 +71,10 @@ impl PointerHandler for OverlayState {
+                         0x112 => MouseButton::Middle,
+                         _ => continue,
+                     };
+-                    self.events.push_back(OverlayEvent::PointerButton { button: mb, pressed });
++                    self.events.push_back(OverlayEvent::PointerButton {
++                        button: mb,
++                        pressed,
++                    });
+                 }
+                 _ => {}
+             }
+@@ -76,4 +82,4 @@ impl PointerHandler for OverlayState {
+     }
+ }
+ 
+-delegate_pointer!(OverlayState);
+\ No newline at end of file
++delegate_pointer!(OverlayState);
+diff --git a/src/backend/wayland/overlay/state/seat.rs b/src/backend/wayland/overlay/state/seat.rs
+index 6a3be55..558e352 100644
+--- a/src/backend/wayland/overlay/state/seat.rs
++++ b/src/backend/wayland/overlay/state/seat.rs
+@@ -4,11 +4,9 @@
+ //
+ // We monitor for new capabilities (keyboard & mouse) to initialize input handlers
+ use smithay_client_toolkit::delegate_seat;
+-use smithay_client_toolkit::seat::{
+-    SeatHandler, Capability,
+-};
+-use wayland_client::{Connection, QueueHandle};
++use smithay_client_toolkit::seat::{Capability, SeatHandler};
+ use wayland_client::protocol::wl_seat;
++use wayland_client::{Connection, QueueHandle};
+ 
+ use crate::backend::wayland::overlay::state::OverlayState;
+ 
+@@ -21,26 +19,38 @@ impl SeatHandler for OverlayState {
+         _: &Connection,
+         qh: &QueueHandle<Self>,
+         seat: wl_seat::WlSeat,
+-        capability: smithay_client_toolkit::seat::Capability
++        capability: smithay_client_toolkit::seat::Capability,
+     ) {
+         match capability {
+             Capability::Pointer => {
+                 // Initialize pointer and bind the cursor shape manager
+                 // to allow controlling cursors shape on our overlay
+-                let pointer = self.seat.get_pointer(qh, &seat).expect("Failed to get pointer");
++                let pointer = self
++                    .seat
++                    .get_pointer(qh, &seat)
++                    .expect("Failed to get pointer");
+                 let device = self.cursor_shape_manager.get_shape_device(&pointer, qh);
+                 self.cursor_shape_device = Some(device);
+             }
+             Capability::Keyboard => {
+                 // Initialize keyboard
+-                self.seat.get_keyboard(qh, &seat, None).expect("Failed to get keyboard");
++                self.seat
++                    .get_keyboard(qh, &seat, None)
++                    .expect("Failed to get keyboard");
+             }
+             _ => {}
+         }
+     }
+ 
+     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+-    fn remove_capability(&mut self,_: &Connection,_: &QueueHandle<Self>,_: wl_seat::WlSeat, _: smithay_client_toolkit::seat::Capability) {}
++    fn remove_capability(
++        &mut self,
++        _: &Connection,
++        _: &QueueHandle<Self>,
++        _: wl_seat::WlSeat,
++        _: smithay_client_toolkit::seat::Capability,
++    ) {
++    }
+     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+ }
+ 
+diff --git a/src/backend/wayland/utils/shm.rs b/src/backend/wayland/utils/shm.rs
+index 9bc0374..960ce4e 100644
+--- a/src/backend/wayland/utils/shm.rs
++++ b/src/backend/wayland/utils/shm.rs
+@@ -1,7 +1,7 @@
+ // ── Shared Memory (shm) buffer Utilities ──────────────────────────────────────
+ // manage low-level shared memory allocations, stride math, and raw pixel  copying for surface drawing.
+ //
+-// in 'utils' to separate raw memory manipulation and buffer rendering 
++// in 'utils' to separate raw memory manipulation and buffer rendering
+ // from the high-level Wayland protocol handlers ('state/compositor_shm_layer.rs')
+ // reminder: each output has its own surface
+ 
+@@ -22,7 +22,8 @@ pub fn create_shm_buffer(
+         width as i32,
+         height as i32,
+         stride,
+-        wl_shm::Format::Argb8888)?;
++        wl_shm::Format::Argb8888,
++    )?;
+ 
+     Ok(ShmBuffer { buffer })
+ }
+@@ -62,4 +63,4 @@ impl ShmBuffer {
+             }
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/backend/wayland/utils/surface.rs b/src/backend/wayland/utils/surface.rs
+index c7ccea2..588e76e 100644
+--- a/src/backend/wayland/utils/surface.rs
++++ b/src/backend/wayland/utils/surface.rs
+@@ -1,21 +1,21 @@
+ // ── Wayland surface data container ───────────────────────────────────────────
+-// utility structure that bundles a raw Wayland surface, its layer_shell 
++// utility structure that bundles a raw Wayland surface, its layer_shell
+ // integration, and its allocated pixel buffers into a single logical window
+ //
+-// in 'utils' because it represents a pure data layout used by the 
++// in 'utils' because it represents a pure data layout used by the
+ // sub-orchestrator ('overlay.rs'), keeping protocol handlers free of state management
+ // reminder: each output has its own surface
+ 
+-use crate::backend::wayland::utils::shm::ShmBuffer; 
++use crate::backend::wayland::utils::shm::ShmBuffer;
+ use wayland_client::protocol::wl_surface;
+ 
+ pub struct SurfaceData {
+     pub surface: wl_surface::WlSurface,
+-    
++
+     pub layer_surface: smithay_client_toolkit::shell::wlr_layer::LayerSurface,
+     pub shm_buffer: ShmBuffer,
+     pub transparent_buffer: ShmBuffer,
+-        
++
+     pub width: u32,
+     pub height: u32,
+-}
+\ No newline at end of file
++}
+diff --git a/src/editor.rs b/src/editor.rs
+index c73d2e1..40b796e 100644
+--- a/src/editor.rs
++++ b/src/editor.rs
+@@ -1,33 +1,36 @@
+-pub mod history;
+ pub mod dirty;
++pub mod history;
+ 
+-use std::time::{Instant};
++use cosmic_text::{Editor, FontSystem, SwashCache};
+ use std::collections::HashMap;
+-use usvg::Tree;
++use std::time::Instant;
+ use tiny_skia::{Pixmap, Rect};
+-use cosmic_text::{FontSystem, SwashCache, Editor};
++use usvg::Tree;
+ 
+ use crate::tools::Tool;
+-use crate::types::{PointerState, Placement, Toolbar, SelectionState, ToolbarButton, Annotation, AnnDragState, MagnifierState, TextEditState};
++use crate::types::{
++    AnnDragState, Annotation, MagnifierState, Placement, PointerState, SelectionState,
++    TextEditState, Toolbar, ToolbarButton,
++};
+ 
+ pub struct EditorState {
+-    pub base: Vec<Pixmap>,          
++    pub base: Vec<Pixmap>,
+     pub canvas: Vec<Pixmap>,
+     pub dimmed: Vec<Pixmap>,
+-    pub placements : Vec<Placement>, 
++    pub placements: Vec<Placement>,
+     pub drag_start: Option<(f64, f64)>,
+-    pub selected_tool: Tool,               
++    pub selected_tool: Tool,
+     pub tool_active: bool,
+     pub pointer: PointerState,
+-    pub magnifier: Option<MagnifierState> ,
++    pub magnifier: Option<MagnifierState>,
+     pub prev_magnifier: Option<MagnifierState>,
+     pub last_mag_update: Option<Instant>,
+-    pub mouse_down_left : bool,
++    pub mouse_down_left: bool,
+     pub selection: SelectionState,
+-    pub toolbar : Toolbar,
+-    pub icon_cache : HashMap<ToolbarButton, Tree>,
++    pub toolbar: Toolbar,
++    pub icon_cache: HashMap<ToolbarButton, Tree>,
+     pub damage_rects: Vec<Rect>,
+-    
++
+     // annotations
+     pub annotations: Vec<Annotation>,
+     pub pending: Option<Annotation>,
+@@ -49,4 +52,4 @@ pub struct EditorState {
+ 
+     pub mod_ctrl: bool,
+     pub mod_shift: bool,
+-}
+\ No newline at end of file
++}
+diff --git a/src/editor/dirty.rs b/src/editor/dirty.rs
+index 8addd56..e5d84f3 100644
+--- a/src/editor/dirty.rs
++++ b/src/editor/dirty.rs
+@@ -92,27 +92,29 @@ impl EditorState {
+                 }
+ 
+                 // if toolbar position (side) changed
+-                if tb.prev_monitor_idx == monitor_idx && tb.prev_position != tb.position {
+-                    if let Some(r) = Rect::from_xywh(
++                if tb.prev_monitor_idx == monitor_idx
++                    && tb.prev_position != tb.position
++                    && let Some(r) = Rect::from_xywh(
+                         tb.prev_position.0,
+                         tb.prev_position.1,
+                         tb.size.0,
+                         TOOLBAR_HEIGHT,
+-                    ) {
+-                        dirty = union_rect(dirty, Some(r));
+-                    }
++                    )
++                {
++                    dirty = union_rect(dirty, Some(r));
+                 }
+             }
+             // if toolbar monitor changed
+-            if tb.prev_monitor_idx == monitor_idx && tb.prev_monitor_idx != tb.monitor_idx {
+-                if let Some(r) = Rect::from_xywh(
++            if tb.prev_monitor_idx == monitor_idx
++                && tb.prev_monitor_idx != tb.monitor_idx
++                && let Some(r) = Rect::from_xywh(
+                     tb.prev_position.0,
+                     tb.prev_position.1,
+                     tb.size.0,
+                     TOOLBAR_HEIGHT,
+-                ) {
+-                    dirty = union_rect(dirty, Some(r));
+-                }
++                )
++            {
++                dirty = union_rect(dirty, Some(r));
+             }
+         }
+         dirty
+@@ -129,22 +131,21 @@ impl EditorState {
+                 global_bbox.top() - offset.1,
+                 global_bbox.right() - offset.0,
+                 global_bbox.bottom() - offset.1,
+-            ) {
+-                if let Some(r) = expand_rect(&local, pad) {
+-                    dirty = union_rect(dirty, Some(r));
+-                }
++            ) && let Some(r) = expand_rect(&local, pad)
++            {
++                dirty = union_rect(dirty, Some(r));
+             }
+         };
+ 
+-        if let Some(ann) = &self.pending {
+-            if !matches!(ann.shape, AnnotationShape::Pen { .. }) {
+-                add_global_rect_dirty(&ann.bbox);
+-            }
++        if let Some(ann) = &self.pending
++            && !matches!(ann.shape, AnnotationShape::Pen { .. })
++        {
++            add_global_rect_dirty(&ann.bbox);
+         }
+-        if let Some(ann) = &self.prev_pending {
+-            if !matches!(ann.shape, AnnotationShape::Pen { .. }) {
+-                add_global_rect_dirty(&ann.bbox);
+-            }
++        if let Some(ann) = &self.prev_pending
++            && !matches!(ann.shape, AnnotationShape::Pen { .. })
++        {
++            add_global_rect_dirty(&ann.bbox);
+         }
+         // selected / moved / resized through Pick tool
+         if let Some(ann) = self.selected_annotation {
+@@ -165,18 +166,18 @@ impl EditorState {
+         state_b: &[Annotation],
+     ) {
+         for ann in state_a {
+-            if !state_b.iter().any(|a| a.id == ann.id) {
+-                if let Some(expanded) = expand_rect(&ann.bbox, ann.stroke_width * 2.0 + 4.0) {
+-                    damage_rects.push(expanded);
+-                }
++            if !state_b.iter().any(|a| a.id == ann.id)
++                && let Some(expanded) = expand_rect(&ann.bbox, ann.stroke_width * 2.0 + 4.0)
++            {
++                damage_rects.push(expanded);
+             }
+         }
+ 
+         for ann in state_b {
+-            if !state_a.iter().any(|a| a.id == ann.id) {
+-                if let Some(expanded) = expand_rect(&ann.bbox, ann.stroke_width * 2.0 + 4.0) {
+-                    damage_rects.push(expanded);
+-                }
++            if !state_a.iter().any(|a| a.id == ann.id)
++                && let Some(expanded) = expand_rect(&ann.bbox, ann.stroke_width * 2.0 + 4.0)
++            {
++                damage_rects.push(expanded);
+             }
+         }
+     }
+diff --git a/src/main.rs b/src/main.rs
+index 45a8111..d3e17c1 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -23,7 +23,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
+     Ok(())
+ }
+ 
+-
+ fn run_clipboard_daemon() {
+     use std::io::Read;
+     use wl_clipboard_rs::copy::{MimeSource, MimeType, Options, Source};
+@@ -32,7 +31,7 @@ fn run_clipboard_daemon() {
+     std::io::stdin().read_to_end(&mut buf).expect("read stdin");
+ 
+     let mut opts = Options::new();
+-    opts.foreground(true); 
++    opts.foreground(true);
+ 
+     let result = opts.copy_multi(vec![
+         MimeSource {
+@@ -53,4 +52,4 @@ fn run_clipboard_daemon() {
+         eprintln!("clipboard daemon error: {e}");
+         std::process::exit(1);
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/renderer.rs b/src/renderer.rs
+index 23e87c8..f910cf0 100644
+--- a/src/renderer.rs
++++ b/src/renderer.rs
+@@ -63,10 +63,10 @@ pub fn render_frame(req: &mut RenderRequest) {
+         );
+     }
+ 
+-    if req.is_mag_monitor {
+-        if let Some(mag) = req.magnifier {
+-            magnifier::draw_magnifier(req.canvas, req.base, (mag.pos.0 as f32, mag.pos.1 as f32));
+-        }
++    if req.is_mag_monitor
++        && let Some(mag) = req.magnifier
++    {
++        magnifier::draw_magnifier(req.canvas, req.base, (mag.pos.0 as f32, mag.pos.1 as f32));
+     }
+ 
+     if let Some(tb) = req.toolbar.as_mut()
+@@ -77,7 +77,7 @@ pub fn render_frame(req: &mut RenderRequest) {
+ }
+ 
+ // ***************************/
+-//// SELECTION + DIMMING  ////
++/// SELECTION + DIMMING  ////
+ // **************************/
+ pub fn init_dimming(dimmed: &mut Pixmap, base: &Pixmap, selection: &Option<Rect>) {
+     dimmed.data_mut().copy_from_slice(base.data());
+@@ -138,17 +138,18 @@ fn draw_dimming(canvas: &mut Pixmap, selection: &Option<Rect>, w: u32, h: u32) {
+                 Rect::from_xywh(sel.right(), sel.top(), w as f32 - sel.right(), sel.height()),
+             ];
+             for rect in rects {
+-                if let Some(r) = rect {
+-                    if r.width() > 0.0 && r.height() > 0.0 {
+-                        let path = PathBuilder::from_rect(r);
+-                        canvas.fill_path(
+-                            &path,
+-                            &paint,
+-                            tiny_skia::FillRule::Winding,
+-                            Transform::identity(),
+-                            None,
+-                        );
+-                    }
++                if let Some(r) = rect
++                    && r.width() > 0.0
++                    && r.height() > 0.0
++                {
++                    let path = PathBuilder::from_rect(r);
++                    canvas.fill_path(
++                        &path,
++                        &paint,
++                        tiny_skia::FillRule::Winding,
++                        Transform::identity(),
++                        None,
++                    );
+                 }
+             }
+         }
+@@ -263,7 +264,7 @@ pub fn rebuild_annotations_layer(
+     font_system: &mut FontSystem,
+     swash_cache: &mut SwashCache,
+     text_editors: &mut HashMap<u64, Editor<'static>>,
+-    active_text_id: Option<u64>,   
++    active_text_id: Option<u64>,
+ ) {
+     layer.fill(tiny_skia::Color::TRANSPARENT);
+ 
+diff --git a/src/renderer/annotations.rs b/src/renderer/annotations.rs
+index bb459b1..f01afcb 100644
+--- a/src/renderer/annotations.rs
++++ b/src/renderer/annotations.rs
+@@ -1,11 +1,14 @@
+ use super::paths::{normalized_rect, oval_path};
+-use crate::types::annotations::{Annotation, AnnotationShape, HANDLE_PAD, SHADOW_COLOR, SHADOW_WIDTH_BONUS};
+ use crate::tools::text::render_text_annotation;
++use crate::types::annotations::{
++    Annotation, AnnotationShape, HANDLE_PAD, SHADOW_COLOR, SHADOW_WIDTH_BONUS,
++};
+ 
+-use cosmic_text::{Buffer, FontSystem, SwashCache, SwashContent, Metrics, Shaping, Attrs, Editor};
++use cosmic_text::{Attrs, Buffer, Editor, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
+ use std::collections::HashMap;
+ use tiny_skia::{
+-    Color, Paint, PathBuilder, Pixmap, PixmapPaint, PremultipliedColorU8, Rect, Stroke, Transform, LineCap, LineJoin, FillRule,
++    Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapPaint,
++    PremultipliedColorU8, Rect, Stroke, Transform,
+ };
+ 
+ pub fn draw_annotation(
+@@ -16,7 +19,7 @@ pub fn draw_annotation(
+     font_system: &mut FontSystem,
+     swash_cache: &mut SwashCache,
+     text_editors: &mut HashMap<u64, Editor<'static>>,
+-    active_text_id: Option<u64>,   
++    active_text_id: Option<u64>,
+ ) {
+     match &ann.shape {
+         AnnotationShape::Arrow { start, end } => {
+@@ -42,8 +45,15 @@ pub fn draw_annotation(
+             let is_editing = active_text_id == Some(ann.id);
+             if let Some(editor) = text_editors.get_mut(&ann.id) {
+                 let mut pixmap_mut = canvas.as_mut();
+-                render_text_annotation(ann, editor, font_system, swash_cache,
+-                    &mut pixmap_mut, offset, is_editing);
++                render_text_annotation(
++                    ann,
++                    editor,
++                    font_system,
++                    swash_cache,
++                    &mut pixmap_mut,
++                    offset,
++                    is_editing,
++                );
+             }
+         }
+         AnnotationShape::NumeratedArrow { start, end, number } => {
+@@ -88,10 +98,7 @@ fn draw_arrow(
+     let head_len = (stroke_width * 4.0).max(12.0).min(len * 0.6);
+     let head_width = head_len * 0.55;
+ 
+-    let line_end = (
+-        end.0 - ux * head_len * 0.7,
+-        end.1 - uy * head_len * 0.7,
+-    );
++    let line_end = (end.0 - ux * head_len * 0.7, end.1 - uy * head_len * 0.7);
+ 
+     let mut pb = PathBuilder::new();
+     pb.move_to(start.0, start.1);
+@@ -142,7 +149,15 @@ fn draw_rect(
+ ) {
+     let transform = Transform::from_translate(-offset.0, -offset.1);
+     let path = PathBuilder::from_rect(*rect);
+-    stroke_with_shadow(canvas, &path, color, stroke_width, LineCap::Butt, LineJoin::Miter, transform);
++    stroke_with_shadow(
++        canvas,
++        &path,
++        color,
++        stroke_width,
++        LineCap::Butt,
++        LineJoin::Miter,
++        transform,
++    );
+ }
+ 
+ fn draw_circle(
+@@ -160,7 +175,15 @@ fn draw_circle(
+     let ry = rect.height() / 2.0;
+ 
+     if let Some(path) = oval_path(cx, cy, rx, ry) {
+-        stroke_with_shadow(canvas, &path, color, stroke_width, LineCap::Butt, LineJoin::Round, transform);
++        stroke_with_shadow(
++            canvas,
++            &path,
++            color,
++            stroke_width,
++            LineCap::Butt,
++            LineJoin::Round,
++            transform,
++        );
+     }
+ }
+ 
+@@ -179,7 +202,15 @@ fn draw_line(
+     pb.line_to(end.0, end.1);
+ 
+     if let Some(path) = pb.finish() {
+-        stroke_with_shadow(canvas, &path, color, stroke_width, LineCap::Round, LineJoin::Round, transform);
++        stroke_with_shadow(
++            canvas,
++            &path,
++            color,
++            stroke_width,
++            LineCap::Round,
++            LineJoin::Round,
++            transform,
++        );
+     }
+ }
+ 
+@@ -201,7 +232,15 @@ fn draw_pen(
+         pb.line_to(p.0, p.1);
+     }
+     if let Some(path) = pb.finish() {
+-        stroke_with_shadow(canvas, &path, color, stroke_width, LineCap::Round, LineJoin::Round, transform);
++        stroke_with_shadow(
++            canvas,
++            &path,
++            color,
++            stroke_width,
++            LineCap::Round,
++            LineJoin::Round,
++            transform,
++        );
+     }
+ }
+ 
+@@ -351,8 +390,8 @@ pub fn draw_text_buffer(
+             let physical = glyph.physical((0., 0.), 1.0);
+ 
+             if let Some(image) = swash_cache.get_image(font_system, physical.cache_key) {
+-                let width = image.placement.width as u32;
+-                let height = image.placement.height as u32;
++                let width = image.placement.width;
++                let height = image.placement.height;
+ 
+                 if width == 0 || height == 0 {
+                     continue;
+@@ -360,37 +399,33 @@ pub fn draw_text_buffer(
+ 
+                 let draw_x =
+                     (x_start + physical.x as f32 + image.placement.left as f32 - offset.0) as i32;
+-                let draw_y =
+-                    (y_start + run.line_y as f32 - image.placement.top as f32 - offset.1) as i32;
+-
+-                match image.content {
+-                    SwashContent::Mask => {
+-                        if let Some(mut glyph_pixmap) = Pixmap::new(width, height) {
+-                            let pixels = glyph_pixmap.pixels_mut();
+-
+-                            for (i, mask_alpha) in image.data.iter().enumerate() {
+-                                let a_f32 = (*mask_alpha as f32 / 255.0) * color.alpha();
+-                                let a_u8 = (a_f32 * 255.0) as u8;
+-
+-                                let pr = (color.red() * a_f32 * 255.0) as u8;
+-                                let pg = (color.green() * a_f32 * 255.0) as u8;
+-                                let pb = (color.blue() * a_f32 * 255.0) as u8;
+-
+-                                pixels[i] = PremultipliedColorU8::from_rgba(pr, pg, pb, a_u8)
+-                                    .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+-                            }
+-
+-                            canvas.draw_pixmap(
+-                                draw_x,
+-                                draw_y,
+-                                glyph_pixmap.as_ref(),
+-                                &PixmapPaint::default(),
+-                                Transform::identity(),
+-                                None,
+-                            );
+-                        }
++                let draw_y = (y_start + run.line_y - image.placement.top as f32 - offset.1) as i32;
++
++                if image.content == SwashContent::Mask
++                    && let Some(mut glyph_pixmap) = Pixmap::new(width, height)
++                {
++                    let pixels = glyph_pixmap.pixels_mut();
++
++                    for (i, mask_alpha) in image.data.iter().enumerate() {
++                        let a_f32 = (*mask_alpha as f32 / 255.0) * color.alpha();
++                        let a_u8 = (a_f32 * 255.0) as u8;
++
++                        let pr = (color.red() * a_f32 * 255.0) as u8;
++                        let pg = (color.green() * a_f32 * 255.0) as u8;
++                        let pb = (color.blue() * a_f32 * 255.0) as u8;
++
++                        pixels[i] = PremultipliedColorU8::from_rgba(pr, pg, pb, a_u8)
++                            .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+                     }
+-                    _ => {}
++
++                    canvas.draw_pixmap(
++                        draw_x,
++                        draw_y,
++                        glyph_pixmap.as_ref(),
++                        &PixmapPaint::default(),
++                        Transform::identity(),
++                        None,
++                    );
+                 }
+             }
+         }
+@@ -461,41 +496,23 @@ fn draw_numerated_arrow(
+         );
+ 
+         let mut pb = PathBuilder::new();
+-        pb.move_to(end.0, end.1); 
++        pb.move_to(end.0, end.1);
+         pb.line_to(base_left.0, base_left.1);
+         pb.line_to(base_right.0, base_right.1);
+         pb.close();
+ 
+         if let Some(path) = pb.finish() {
+             canvas.stroke_path(&path, &shadow_paint, &shadow_stroke, transform, None);
+-            canvas.fill_path(
+-                &path,
+-                &stroke_paint,
+-                FillRule::Winding,
+-                transform,
+-                None,
+-            );
++            canvas.fill_path(&path, &stroke_paint, FillRule::Winding, transform, None);
+         }
+     }
+ 
+     if let Some(circle) = oval_path(start.0, start.1, circle_radius, circle_radius) {
+         canvas.stroke_path(&circle, &shadow_paint, &shadow_stroke, transform, None);
+ 
+-        canvas.fill_path(
+-            &circle,
+-            &fill_paint,
+-            FillRule::Winding,
+-            transform,
+-            None,
+-        );
++        canvas.fill_path(&circle, &fill_paint, FillRule::Winding, transform, None);
+ 
+-        canvas.stroke_path(
+-            &circle,
+-            &stroke_paint,
+-            &stroke,
+-            transform,
+-            None,
+-        );
++        canvas.stroke_path(&circle, &stroke_paint, &stroke, transform, None);
+     }
+ 
+     let digits = number.to_string().len();
+@@ -511,10 +528,7 @@ fn draw_numerated_arrow(
+ 
+     let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_height));
+ 
+-    buffer.set_size(
+-        Some(circle_radius * 2.0),
+-        Some(circle_radius * 2.0),
+-    );
++    buffer.set_size(Some(circle_radius * 2.0), Some(circle_radius * 2.0));
+ 
+     buffer.set_text(
+         &number.to_string(),
+@@ -584,4 +598,4 @@ fn stroke_with_shadow(
+     stroke.line_join = line_join;
+ 
+     canvas.stroke_path(path, &paint, &stroke, transform, None);
+-}
+\ No newline at end of file
++}
+diff --git a/src/renderer/toolbar.rs b/src/renderer/toolbar.rs
+index e99101f..c9e1ade 100644
+--- a/src/renderer/toolbar.rs
++++ b/src/renderer/toolbar.rs
+@@ -18,7 +18,7 @@ pub fn draw_toolbar(
+     let needs_resize = toolbar
+         .toolbar_pixmap
+         .as_ref()
+-        .map_or(true, |p| p.width() != pw || p.height() != ph);
++        .is_none_or(|p| p.width() != pw || p.height() != ph);
+ 
+     if needs_resize {
+         toolbar.toolbar_pixmap = Pixmap::new(pw, ph);
+@@ -90,20 +90,19 @@ fn draw_toolbar_content(
+                     let icon_x = current_x + padding;
+                     let icon_y = rect.top() + padding;
+ 
+-                    if toolbar.selected == Some(index) || toolbar.hovered == Some(index) {
+-                        if let Some(cell_rect) =
++                    if (toolbar.selected == Some(index) || toolbar.hovered == Some(index))
++                        && let Some(cell_rect) =
+                             Rect::from_xywh(current_x, rect.top(), cell_size, cell_size)
+-                        {
+-                            let mut cell_paint = Paint::default();
+-                            let color = if toolbar.selected == Some(index) {
+-                                Color::from_rgba8(200, 200, 200, 255)
+-                            } else {
+-                                Color::from_rgba8(230, 230, 230, 255)
+-                            };
+-                            cell_paint.set_color(color);
+-                            cell_paint.anti_alias = true;
+-                            canvas.fill_rect(cell_rect, &cell_paint, Transform::identity(), None);
+-                        }
++                    {
++                        let mut cell_paint = Paint::default();
++                        let color = if toolbar.selected == Some(index) {
++                            Color::from_rgba8(200, 200, 200, 255)
++                        } else {
++                            Color::from_rgba8(230, 230, 230, 255)
++                        };
++                        cell_paint.set_color(color);
++                        cell_paint.anti_alias = true;
++                        canvas.fill_rect(cell_rect, &cell_paint, Transform::identity(), None);
+                     }
+ 
+                     let scale_x = icon_size / rtree.size().width();
+diff --git a/src/tools.rs b/src/tools.rs
+index b06ae32..0ef3757 100644
+--- a/src/tools.rs
++++ b/src/tools.rs
+@@ -1,20 +1,19 @@
++pub mod numerated_arrow;
++pub mod pen;
++pub mod pick;
+ pub mod selection;
+ pub mod simple_shapes;
+-pub mod pen;
+ pub mod text;
+-pub mod pick;
+-pub mod numerated_arrow;
+ 
++use crate::editor::EditorState;
++use crate::tools::numerated_arrow::NumeratedArrowTool;
+ use crate::tools::pen::PenTool;
++use crate::tools::pick::PickTool;
+ use crate::tools::selection::SelectionTool;
+-use crate::tools::simple_shapes::SimpleShapeTool; 
++use crate::tools::simple_shapes::SimpleShapeTool;
+ use crate::tools::text::TextTool;
+-use crate::tools::pick::PickTool;
+ use crate::types::annotations::AnnotationShape;
+ use crate::types::{MouseButton, SpecialKey};
+-use crate::editor::EditorState;
+-use crate::tools::numerated_arrow::NumeratedArrowTool;
+-
+ 
+ // ==========================================
+ // 1. Available Tools
+@@ -37,9 +36,21 @@ pub enum Tool {
+ // 2. trait
+ // ==========================================
+ pub trait ToolBehavior {
+-    fn on_button(&self, state: &mut EditorState, button: MouseButton, pressed: bool, dirty_mask: &mut u32);
+-    fn on_move(&self, state: &mut EditorState, global: (f64, f64), selection_dirty: &mut bool, dirty_mask: &mut u32);
+-    fn on_deactivate(&self, _state: &mut EditorState, _dirty_mask: &mut u32) {} 
++    fn on_button(
++        &self,
++        state: &mut EditorState,
++        button: MouseButton,
++        pressed: bool,
++        dirty_mask: &mut u32,
++    );
++    fn on_move(
++        &self,
++        state: &mut EditorState,
++        global: (f64, f64),
++        selection_dirty: &mut bool,
++        dirty_mask: &mut u32,
++    );
++    fn on_deactivate(&self, _state: &mut EditorState, _dirty_mask: &mut u32) {}
+     fn on_text(&self, _state: &mut EditorState, _ch: char, _dirty_mask: &mut u32) {}
+     fn on_key(&self, _state: &mut EditorState, _key: SpecialKey, _dirty_mask: &mut u32) {}
+ }
+@@ -56,11 +67,13 @@ pub fn dispatch_move(
+ ) {
+     match tool {
+         Tool::Selection => SelectionTool.on_move(state, global, selection_dirty, dirty_mask),
+-        Tool::Pick      => PickTool.on_move(state, global, selection_dirty, dirty_mask),
+-        Tool::Text      => TextTool.on_move(state, global, selection_dirty, dirty_mask),
+-        Tool::Pen       => PenTool.on_move(state, global, selection_dirty, dirty_mask),
+-        Tool::NumeratedArrow => NumeratedArrowTool.on_move(state, global, selection_dirty, dirty_mask),
+-        
++        Tool::Pick => PickTool.on_move(state, global, selection_dirty, dirty_mask),
++        Tool::Text => TextTool.on_move(state, global, selection_dirty, dirty_mask),
++        Tool::Pen => PenTool.on_move(state, global, selection_dirty, dirty_mask),
++        Tool::NumeratedArrow => {
++            NumeratedArrowTool.on_move(state, global, selection_dirty, dirty_mask)
++        }
++
+         Tool::Rectangle | Tool::Arrow | Tool::Circle | Tool::Line => {
+             let tool_impl = SimpleShapeTool {
+                 make_shape: match tool {
+@@ -69,10 +82,10 @@ pub fn dispatch_move(
+                     Tool::Circle => |start, end| AnnotationShape::Circle { start, end },
+                     _ => |start, end| AnnotationShape::Line { start, end },
+                 },
+-                color: tiny_skia::Color::from_rgba8(255, 255, 255, 255), 
++                color: tiny_skia::Color::from_rgba8(255, 255, 255, 255),
+                 stroke_width: 8.0,
+             };
+-            
++
+             tool_impl.on_move(state, global, selection_dirty, dirty_mask);
+         }
+     }
+@@ -91,7 +104,7 @@ pub fn dispatch_button(
+         Tool::Text => TextTool.on_button(state, button, pressed, dirty_mask),
+         Tool::Pen => PenTool.on_button(state, button, pressed, dirty_mask),
+         Tool::NumeratedArrow => NumeratedArrowTool.on_button(state, button, pressed, dirty_mask),
+-        
++
+         Tool::Rectangle | Tool::Arrow | Tool::Circle | Tool::Line => {
+             let tool_impl = SimpleShapeTool {
+                 make_shape: match tool {
+@@ -103,7 +116,7 @@ pub fn dispatch_button(
+                 color: tiny_skia::Color::from_rgba8(255, 255, 255, 255),
+                 stroke_width: 8.0,
+             };
+-            
++
+             tool_impl.on_button(state, button, pressed, dirty_mask);
+         }
+     }
+@@ -118,17 +131,14 @@ pub fn dispatch_deactivate(tool: Tool, state: &mut EditorState, dirty_mask: &mut
+     }
+ }
+ 
+-
+ pub fn dispatch_text(tool: Tool, state: &mut EditorState, ch: char, dirty_mask: &mut u32) {
+-    match tool {
+-        Tool::Text => TextTool.on_text(state, ch, dirty_mask),
+-        _ => {}
++    if tool == Tool::Text {
++        TextTool.on_text(state, ch, dirty_mask)
+     }
+ }
+ 
+ pub fn dispatch_key(tool: Tool, state: &mut EditorState, key: SpecialKey, dirty_mask: &mut u32) {
+-    match tool {
+-        Tool::Text => TextTool.on_key(state, key, dirty_mask),
+-        _ => {}
++    if tool == Tool::Text {
++        TextTool.on_key(state, key, dirty_mask)
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/tools/numerated_arrow.rs b/src/tools/numerated_arrow.rs
+index 4e2e87d..bc49a07 100644
+--- a/src/tools/numerated_arrow.rs
++++ b/src/tools/numerated_arrow.rs
+@@ -15,7 +15,7 @@ impl ToolBehavior for NumeratedArrowTool {
+         _dirty_mask: &mut u32,
+     ) {
+         let pos = (state.pointer.global.0 as f32, state.pointer.global.1 as f32);
+-        
++
+         if pressed {
+             let mut used_numbers = Vec::new();
+             for ann in &state.annotations {
+@@ -23,33 +23,32 @@ impl ToolBehavior for NumeratedArrowTool {
+                     used_numbers.push(*number);
+                 }
+             }
+-            
++
+             used_numbers.sort_unstable();
+             let mut next_number = 1;
+             for num in used_numbers {
+                 if num == next_number {
+                     next_number += 1;
+                 } else if num > next_number {
+-                    break; 
++                    break;
+                 }
+             }
+ 
+             let mut ann = Annotation {
+                 id: state.next_id,
+-                shape: AnnotationShape::NumeratedArrow { 
+-                    start: pos, 
+-                    end: pos, 
+-                    number: next_number 
++                shape: AnnotationShape::NumeratedArrow {
++                    start: pos,
++                    end: pos,
++                    number: next_number,
+                 },
+-                color: Color::from_rgba8(255, 0, 0, 255), 
+-                stroke_width: 8.0,                        
++                color: Color::from_rgba8(255, 0, 0, 255),
++                stroke_width: 8.0,
+                 bbox: Rect::from_xywh(pos.0, pos.1, 1.0, 1.0).unwrap(),
+             };
+             ann.update_bbox();
+ 
+             state.pending = Some(ann.clone());
+             state.prev_pending = Some(ann);
+-            
+         } else if let Some(ann) = state.pending.take() {
+             state.next_id += 1;
+             state.push_undo();
+@@ -76,10 +75,10 @@ impl ToolBehavior for NumeratedArrowTool {
+                 _ => 1,
+             };
+ 
+-            ann.shape = AnnotationShape::NumeratedArrow { 
+-                start, 
+-                end: pos, 
+-                number: current_number 
++            ann.shape = AnnotationShape::NumeratedArrow {
++                start,
++                end: pos,
++                number: current_number,
+             };
+             ann.update_bbox();
+ 
+@@ -87,4 +86,4 @@ impl ToolBehavior for NumeratedArrowTool {
+             state.annotations_dirty = true;
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/tools/pen.rs b/src/tools/pen.rs
+index 97c77d3..88915b0 100644
+--- a/src/tools/pen.rs
++++ b/src/tools/pen.rs
+@@ -52,16 +52,16 @@ impl ToolBehavior for PenTool {
+ 
+         if let Some(ann) = state.pending.as_mut() {
+             if let AnnotationShape::Pen { points } = &mut ann.shape {
+-                if let Some(&last) = points.last() {
+-                    if let Some(segment_bbox) = Rect::from_ltrb(
++                if let Some(&last) = points.last()
++                    && let Some(segment_bbox) = Rect::from_ltrb(
+                         last.0.min(pos.0),
+                         last.1.min(pos.1),
+                         last.0.max(pos.0),
+                         last.1.max(pos.1),
+-                    ) {
+-                        state.damage_rects.push(segment_bbox);
+-                        state.annotations_dirty = true;
+-                    }
++                    )
++                {
++                    state.damage_rects.push(segment_bbox);
++                    state.annotations_dirty = true;
+                 }
+                 points.push(pos);
+             }
+diff --git a/src/tools/pick.rs b/src/tools/pick.rs
+index 277f60c..29e694b 100644
+--- a/src/tools/pick.rs
++++ b/src/tools/pick.rs
+@@ -1,8 +1,8 @@
+ use crate::editor::EditorState;
+ use crate::tools::ToolBehavior;
+ use crate::types::{
+-    AnnDragState, MouseButton, SelectionHandle, 
+-    annotations::{commit_drag_if_changed, apply_annotation_drag, begin_drag_for_annotation}
++    AnnDragState, MouseButton, SelectionHandle,
++    annotations::{apply_annotation_drag, begin_drag_for_annotation, commit_drag_if_changed},
+ };
+ 
+ pub struct PickTool;
+@@ -98,4 +98,4 @@ impl ToolBehavior for PickTool {
+             state.ann_drag = None;
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/tools/text.rs b/src/tools/text.rs
+index 3d1289a..a181070 100644
+--- a/src/tools/text.rs
++++ b/src/tools/text.rs
+@@ -1,13 +1,14 @@
+-use crate::tools::ToolBehavior;
+-use crate::types::{MouseButton, Annotation, AnnotationShape, TextEditState, SpecialKey};
+ use crate::editor::EditorState;
+-use crate::types::annotations::{begin_drag_for_annotation, apply_annotation_drag, commit_drag_if_changed};
++use crate::tools::ToolBehavior;
++use crate::types::annotations::{
++    apply_annotation_drag, begin_drag_for_annotation, commit_drag_if_changed,
++};
++use crate::types::{Annotation, AnnotationShape, MouseButton, SpecialKey, TextEditState};
+ 
+-use tiny_skia::{Rect, Color, PixmapMut};
+ use cosmic_text::{
+-    Action, Attrs, Buffer, Edit, Editor, Family, Metrics,
+-    Motion, Selection, Shaping, SwashCache,
++    Action, Attrs, Buffer, Edit, Editor, Family, Metrics, Motion, Selection, Shaping, SwashCache,
+ };
++use tiny_skia::{Color, PixmapMut, Rect};
+ 
+ pub struct TextTool;
+ 
+@@ -15,16 +16,44 @@ pub struct TextTool;
+ 
+ fn key_to_action(key: SpecialKey, ctrl: bool) -> Option<Action> {
+     match key {
+-        SpecialKey::KeyA      => None,
+-        SpecialKey::Left      => Some(Action::Motion(if ctrl { Motion::LeftWord    } else { Motion::Left        })),
+-        SpecialKey::Right     => Some(Action::Motion(if ctrl { Motion::RightWord   } else { Motion::Right       })),
+-        SpecialKey::Home      => Some(Action::Motion(if ctrl { Motion::BufferStart } else { Motion::Home        })),
+-        SpecialKey::End       => Some(Action::Motion(if ctrl { Motion::BufferEnd   } else { Motion::End         })),
+-        SpecialKey::Up        => Some(Action::Motion(Motion::Up)),
+-        SpecialKey::Down      => Some(Action::Motion(Motion::Down)),
+-        SpecialKey::Backspace => if ctrl { None } else { Some(Action::Backspace) },
+-        SpecialKey::Delete    => if ctrl { None } else { Some(Action::Delete)    },
+-        SpecialKey::Enter     => Some(Action::Enter),
++        SpecialKey::KeyA => None,
++        SpecialKey::Left => Some(Action::Motion(if ctrl {
++            Motion::LeftWord
++        } else {
++            Motion::Left
++        })),
++        SpecialKey::Right => Some(Action::Motion(if ctrl {
++            Motion::RightWord
++        } else {
++            Motion::Right
++        })),
++        SpecialKey::Home => Some(Action::Motion(if ctrl {
++            Motion::BufferStart
++        } else {
++            Motion::Home
++        })),
++        SpecialKey::End => Some(Action::Motion(if ctrl {
++            Motion::BufferEnd
++        } else {
++            Motion::End
++        })),
++        SpecialKey::Up => Some(Action::Motion(Motion::Up)),
++        SpecialKey::Down => Some(Action::Motion(Motion::Down)),
++        SpecialKey::Backspace => {
++            if ctrl {
++                None
++            } else {
++                Some(Action::Backspace)
++            }
++        }
++        SpecialKey::Delete => {
++            if ctrl {
++                None
++            } else {
++                Some(Action::Delete)
++            }
++        }
++        SpecialKey::Enter => Some(Action::Enter),
+     }
+ }
+ 
+@@ -35,19 +64,21 @@ pub fn apply_key_to_editor(
+     ctrl: bool,
+     shift: bool,
+ ) -> bool {
+-
+     if ctrl && matches!(key, SpecialKey::KeyA) {
+         let start_cursor = cosmic_text::Cursor::new(0, 0);
+         editor.set_selection(Selection::Normal(start_cursor));
+         editor.action(font_system, Action::Motion(Motion::BufferEnd));
+-        return false; 
++        return false;
+     }
+ 
+     let is_motion = matches!(
+         key,
+-        SpecialKey::Left | SpecialKey::Right
+-            | SpecialKey::Home | SpecialKey::End
+-            | SpecialKey::Up   | SpecialKey::Down
++        SpecialKey::Left
++            | SpecialKey::Right
++            | SpecialKey::Home
++            | SpecialKey::End
++            | SpecialKey::Up
++            | SpecialKey::Down
+     );
+ 
+     if is_motion {
+@@ -94,8 +125,16 @@ pub fn apply_key_to_editor(
+ // ── ToolBehavior ─────────────────────────────────────────────────────────────
+ 
+ impl ToolBehavior for TextTool {
+-    fn on_button(&self, state: &mut EditorState, button: MouseButton, pressed: bool, _dirty_mask: &mut u32) {
+-        if !matches!(button, MouseButton::Left) { return; }
++    fn on_button(
++        &self,
++        state: &mut EditorState,
++        button: MouseButton,
++        pressed: bool,
++        _dirty_mask: &mut u32,
++    ) {
++        if !matches!(button, MouseButton::Left) {
++            return;
++        }
+ 
+         if !pressed {
+             commit_drag_if_changed(state);
+@@ -106,17 +145,25 @@ impl ToolBehavior for TextTool {
+ 
+         // 1. possibility to select other text fields (replacing tools/pick.rs)
+         for (i, ann) in state.annotations.iter().enumerate().rev() {
+-            if !matches!(ann.shape, AnnotationShape::Text { .. }) { continue; }
+-            if !ann.initial_hit_test(state.pointer.global) { continue; }
++            if !matches!(ann.shape, AnnotationShape::Text { .. }) {
++                continue;
++            }
++            if !ann.initial_hit_test(state.pointer.global) {
++                continue;
++            }
+ 
+-            if let Some(prev) = state.text_editing.as_ref() {
+-                if prev.annotation_id != ann.id {
+-                    if let Some(prev_ann) = state.annotations.iter().find(|a| a.id == prev.annotation_id) {
+-                        state.damage_rects.push(prev_ann.damage_bbox(true));
+-                    }
+-                    if let Some(prev_editor) = state.text_editors.get_mut(&prev.annotation_id) {
+-                        prev_editor.set_selection(Selection::None);
+-                    }
++            if let Some(prev) = state.text_editing.as_ref()
++                && prev.annotation_id != ann.id
++            {
++                if let Some(prev_ann) = state
++                    .annotations
++                    .iter()
++                    .find(|a| a.id == prev.annotation_id)
++                {
++                    state.damage_rects.push(prev_ann.damage_bbox(true));
++                }
++                if let Some(prev_editor) = state.text_editors.get_mut(&prev.annotation_id) {
++                    prev_editor.set_selection(Selection::None);
+                 }
+             }
+ 
+@@ -128,7 +175,10 @@ impl ToolBehavior for TextTool {
+                 editor.action(&mut state.font_system, Action::Motion(Motion::BufferEnd));
+             }
+ 
+-            state.text_editing = Some(TextEditState { annotation_id: ann_id, cursor: 0 });
++            state.text_editing = Some(TextEditState {
++                annotation_id: ann_id,
++                cursor: 0,
++            });
+             state.selected_annotation = Some(i);
+             state.annotations_dirty = true;
+             begin_drag_for_annotation(state, i);
+@@ -137,7 +187,11 @@ impl ToolBehavior for TextTool {
+ 
+         // 2. clicking on empty > remove prev text focus if exists
+         if let Some(edit) = state.text_editing.take() {
+-            if let Some(prev_ann) = state.annotations.iter().find(|a| a.id == edit.annotation_id) {
++            if let Some(prev_ann) = state
++                .annotations
++                .iter()
++                .find(|a| a.id == edit.annotation_id)
++            {
+                 state.damage_rects.push(prev_ann.damage_bbox(true));
+             }
+             if let Some(editor) = state.text_editors.get_mut(&edit.annotation_id) {
+@@ -189,17 +243,28 @@ impl ToolBehavior for TextTool {
+         state.damage_rects.push(ann.damage_bbox(true));
+         state.annotations.push(ann);
+ 
+-        state.text_editing = Some(TextEditState { annotation_id: id, cursor: 0 });
++        state.text_editing = Some(TextEditState {
++            annotation_id: id,
++            cursor: 0,
++        });
+         state.selected_annotation = Some(state.annotations.len() - 1);
+         state.annotations_dirty = true;
+     }
+ 
+-    fn on_move(&self, state: &mut EditorState, global: (f64, f64), _sel_dirty: &mut bool, _dirty_mask: &mut u32) {
++    fn on_move(
++        &self,
++        state: &mut EditorState,
++        global: (f64, f64),
++        _sel_dirty: &mut bool,
++        _dirty_mask: &mut u32,
++    ) {
+         apply_annotation_drag(state, global);
+     }
+ 
+     fn on_text(&self, state: &mut EditorState, ch: char, _dirty_mask: &mut u32) {
+-        let Some(edit) = state.text_editing.as_ref() else { return };
++        let Some(edit) = state.text_editing.as_ref() else {
++            return;
++        };
+         let id = edit.annotation_id;
+ 
+         if let Some(ann) = state.annotations.iter().find(|a| a.id == id) {
+@@ -219,7 +284,9 @@ impl ToolBehavior for TextTool {
+     }
+ 
+     fn on_key(&self, state: &mut EditorState, key: SpecialKey, _dirty_mask: &mut u32) {
+-        let Some(edit) = state.text_editing.as_ref() else { return };
++        let Some(edit) = state.text_editing.as_ref() else {
++            return;
++        };
+         let id = edit.annotation_id;
+         let ctrl = state.mod_ctrl;
+         let shift = state.mod_shift;
+@@ -229,9 +296,15 @@ impl ToolBehavior for TextTool {
+         }
+ 
+         if let Some(editor) = state.text_editors.get_mut(&id) {
+-            let text_changed = apply_key_to_editor(editor, &mut state.font_system, key, ctrl, shift);
++            let text_changed =
++                apply_key_to_editor(editor, &mut state.font_system, key, ctrl, shift);
+             if text_changed {
+-                sync_content_from_editor(id, editor, &mut state.annotations, &mut state.font_system);
++                sync_content_from_editor(
++                    id,
++                    editor,
++                    &mut state.annotations,
++                    &mut state.font_system,
++                );
+             }
+         }
+ 
+@@ -244,7 +317,11 @@ impl ToolBehavior for TextTool {
+ 
+     fn on_deactivate(&self, state: &mut EditorState, _dirty_mask: &mut u32) {
+         if let Some(edit) = state.text_editing.take() {
+-            if let Some(ann) = state.annotations.iter().find(|a| a.id == edit.annotation_id) {
++            if let Some(ann) = state
++                .annotations
++                .iter()
++                .find(|a| a.id == edit.annotation_id)
++            {
+                 state.damage_rects.push(ann.damage_bbox(true));
+             }
+             if let Some(editor) = state.text_editors.get_mut(&edit.annotation_id) {
+@@ -261,7 +338,8 @@ impl ToolBehavior for TextTool {
+ 
+ /// Used after any text changement
+ fn sync_content_from_editor(
+-    id: u64,    editor: &mut Editor<'static>,
++    id: u64,
++    editor: &mut Editor<'static>,
+     annotations: &mut Vec<Annotation>,
+     font_system: &mut cosmic_text::FontSystem,
+ ) {
+@@ -281,8 +359,17 @@ fn sync_content_from_editor(
+             .collect()
+     });
+ 
+-    let Some(ann) = annotations.iter_mut().find(|a| a.id == id) else { return };
+-    let AnnotationShape::Text { content, start, font_size } = &mut ann.shape else { return };
++    let Some(ann) = annotations.iter_mut().find(|a| a.id == id) else {
++        return;
++    };
++    let AnnotationShape::Text {
++        content,
++        start,
++        font_size,
++    } = &mut ann.shape
++    else {
++        return;
++    };
+ 
+     *content = new_content;
+ 
+@@ -294,7 +381,9 @@ fn sync_content_from_editor(
+         let mut max_w = 0.0_f32;
+         let mut total_h = 0.0_f32;
+         for run in buf.layout_runs() {
+-            if run.line_w > max_w { max_w = run.line_w; }
++            if run.line_w > max_w {
++                max_w = run.line_w;
++            }
+             total_h = run.line_y + lh;
+         }
+         (max_w.max(10.0), if total_h > 0.0 { total_h } else { lh })
+@@ -306,14 +395,19 @@ fn sync_content_from_editor(
+ 
+ // ── pub helpers ─────────────────────────────────────────────────────────
+ 
+-/// Since it needs editor its better to make this function seperate 
++/// Since it needs editor its better to make this function seperate
+ /// instead of using update_bbox from types/nnotations.rs
+ pub fn update_text_bbox_inline(
+     ann: &mut Annotation,
+     editor: &mut Editor<'static>,
+     font_system: &mut cosmic_text::FontSystem,
+ ) {
+-    let AnnotationShape::Text { start, font_size, .. } = &ann.shape else { return };
++    let AnnotationShape::Text {
++        start, font_size, ..
++    } = &ann.shape
++    else {
++        return;
++    };
+     let (x, y) = *start;
+     let current_font_size = *font_size;
+     let fallback_h = current_font_size * 1.2;
+@@ -333,7 +427,9 @@ pub fn update_text_bbox_inline(
+         let mut max_w = 0.0_f32;
+         let mut total_h = 0.0_f32;
+         for run in buf.layout_runs() {
+-            if run.line_w > max_w { max_w = run.line_w; }
++            if run.line_w > max_w {
++                max_w = run.line_w;
++            }
+             total_h = run.line_y + lh;
+         }
+         (max_w.max(10.0), if total_h > 0.0 { total_h } else { lh })
+@@ -355,20 +451,22 @@ pub fn render_text_annotation(
+     offset: (f32, f32),
+     is_editing: bool,
+ ) {
+-    let AnnotationShape::Text { start, .. } = &ann.shape else { return };
++    let AnnotationShape::Text { start, .. } = &ann.shape else {
++        return;
++    };
+     let ann_x = start.0 - offset.0;
+     let ann_y = start.1 - offset.1;
+ 
+-    let r = (ann.color.red()   * 255.0) as u8;
++    let r = (ann.color.red() * 255.0) as u8;
+     let g = (ann.color.green() * 255.0) as u8;
+-    let b = (ann.color.blue()  * 255.0) as u8;
++    let b = (ann.color.blue() * 255.0) as u8;
+     let a = (ann.color.alpha() * 255.0) as u8;
+ 
+-    let text_color     = cosmic_text::Color::rgba(r, g, b, a);
+-    let cursor_color   = cosmic_text::Color::rgba(255, 255, 255, 220);
+-    let sel_color      = cosmic_text::Color::rgba(100, 150, 255, 160);
++    let text_color = cosmic_text::Color::rgba(r, g, b, a);
++    let cursor_color = cosmic_text::Color::rgba(255, 255, 255, 220);
++    let sel_color = cosmic_text::Color::rgba(100, 150, 255, 160);
+     let sel_text_color = cosmic_text::Color::rgba(255, 255, 255, 255);
+-    let transparent    = cosmic_text::Color::rgba(0, 0, 0, 0);
++    let transparent = cosmic_text::Color::rgba(0, 0, 0, 0);
+ 
+     let (cur_col, sel_col) = if is_editing {
+         (cursor_color, sel_color)
+@@ -402,7 +500,9 @@ pub fn render_text_annotation(
+             let h_int = h as i32;
+ 
+             let src_a = color.a() as u32;
+-            if src_a == 0 { return; }
++            if src_a == 0 {
++                return;
++            }
+ 
+             let src_r = (color.r() as u32 * src_a) / 255;
+             let src_g = (color.g() as u32 * src_a) / 255;
+@@ -411,22 +511,29 @@ pub fn render_text_annotation(
+ 
+             for dy in 0..h_int {
+                 let py = start_y + dy;
+-                if py < 0 || py >= p_height { continue; }
++                if py < 0 || py >= p_height {
++                    continue;
++                }
+ 
+                 for dx in 0..w_int {
+                     let px = start_x + dx;
+-                    if px < 0 || px >= p_width { continue; }
++                    if px < 0 || px >= p_width {
++                        continue;
++                    }
+ 
+                     let idx = (py * p_width + px) as usize;
+                     let dst = pixels[idx];
+ 
+                     let out_a = src_a + (dst.alpha() as u32 * inv_a) / 255;
+-                    let out_r = src_r + (dst.red()   as u32 * inv_a) / 255;
++                    let out_r = src_r + (dst.red() as u32 * inv_a) / 255;
+                     let out_g = src_g + (dst.green() as u32 * inv_a) / 255;
+-                    let out_b = src_b + (dst.blue()  as u32 * inv_a) / 255;
++                    let out_b = src_b + (dst.blue() as u32 * inv_a) / 255;
+ 
+                     if let Some(c) = tiny_skia::PremultipliedColorU8::from_rgba(
+-                        out_r as u8, out_g as u8, out_b as u8, out_a as u8
++                        out_r as u8,
++                        out_g as u8,
++                        out_b as u8,
++                        out_a as u8,
+                     ) {
+                         pixels[idx] = c;
+                     }
+@@ -434,4 +541,4 @@ pub fn render_text_annotation(
+             }
+         },
+     );
+-}
+\ No newline at end of file
++}
+diff --git a/src/types/annotations.rs b/src/types/annotations.rs
+index ee708f6..d3e90a0 100644
+--- a/src/types/annotations.rs
++++ b/src/types/annotations.rs
+@@ -1,8 +1,8 @@
+-use tiny_skia::{Rect, Color};
+-use crate::types::{SelectionHandle, SignedRect};
+-use crate::utils::{hit_test_rect_handle, apply_handle_drag};
+ use crate::editor::EditorState;
+ use crate::tools::text::update_text_bbox_inline;
++use crate::types::{SelectionHandle, SignedRect};
++use crate::utils::{apply_handle_drag, hit_test_rect_handle};
++use tiny_skia::{Color, Rect};
+ 
+ pub const HANDLE_PAD: f64 = 20.0;
+ pub const SHADOW_COLOR: (u8, u8, u8, u8) = (0, 0, 0, 130);
+@@ -10,36 +10,54 @@ pub const SHADOW_WIDTH_BONUS: f32 = 4.0;
+ 
+ #[derive(Clone)]
+ pub enum AnnotationShape {
+-    NumeratedArrow { start: (f32, f32), end: (f32, f32), number: u32 },
+-    Arrow          { start: (f32, f32), end: (f32, f32) },
+-    Rectangle      { start: (f32, f32), end: (f32, f32) },
+-    Circle         { start: (f32, f32), end: (f32, f32) },
+-    Line           { start: (f32, f32), end: (f32, f32) },
+-    Pen            { points: Vec<(f32, f32)> }, 
+-    Text           {
++    NumeratedArrow {
++        start: (f32, f32),
++        end: (f32, f32),
++        number: u32,
++    },
++    Arrow {
++        start: (f32, f32),
++        end: (f32, f32),
++    },
++    Rectangle {
++        start: (f32, f32),
++        end: (f32, f32),
++    },
++    Circle {
+         start: (f32, f32),
+-        content: String, 
++        end: (f32, f32),
++    },
++    Line {
++        start: (f32, f32),
++        end: (f32, f32),
++    },
++    Pen {
++        points: Vec<(f32, f32)>,
++    },
++    Text {
++        start: (f32, f32),
++        content: String,
+         font_size: f32,
+-    }
++    },
+ }
+ 
+ pub struct AnnDragState {
+-    pub handle: SelectionHandle,   
++    pub handle: SelectionHandle,
+     pub start_global: (f64, f64),
+-    pub prev_global: (f64, f64),  
+-    pub orig: Annotation,          // snapshot
++    pub prev_global: (f64, f64),
++    pub orig: Annotation, // snapshot
+ }
+ 
+ impl AnnotationShape {
+     pub fn start_point(&self) -> (f32, f32) {
+         match self {
+             AnnotationShape::NumeratedArrow { start, .. } => *start,
+-            AnnotationShape::Arrow          { start, .. } => *start,
+-            AnnotationShape::Rectangle      { start, .. } => *start,
+-            AnnotationShape::Circle         { start, .. } => *start,
+-            AnnotationShape::Line           { start, .. } => *start,
+-            AnnotationShape::Pen            { points } => points.first().copied().unwrap_or((0.0, 0.0)),
+-            AnnotationShape::Text           { start, .. } => *start, 
++            AnnotationShape::Arrow { start, .. } => *start,
++            AnnotationShape::Rectangle { start, .. } => *start,
++            AnnotationShape::Circle { start, .. } => *start,
++            AnnotationShape::Line { start, .. } => *start,
++            AnnotationShape::Pen { points } => points.first().copied().unwrap_or((0.0, 0.0)),
++            AnnotationShape::Text { start, .. } => *start,
+         }
+     }
+ }
+@@ -56,17 +74,18 @@ pub struct Annotation {
+ impl Annotation {
+     pub fn update_bbox(&mut self) {
+         match &self.shape {
+-            AnnotationShape::NumeratedArrow { start, end, .. } |
+-            AnnotationShape::Arrow { start, end } |
+-            AnnotationShape::Rectangle { start, end } |
+-            AnnotationShape::Circle { start, end } |
+-            AnnotationShape::Line { start, end } => {
++            AnnotationShape::NumeratedArrow { start, end, .. }
++            | AnnotationShape::Arrow { start, end }
++            | AnnotationShape::Rectangle { start, end }
++            | AnnotationShape::Circle { start, end }
++            | AnnotationShape::Line { start, end } => {
+                 self.bbox = Rect::from_ltrb(
+                     start.0.min(end.0),
+                     start.1.min(end.1),
+                     start.0.max(end.0),
+                     start.1.max(end.1),
+-                ).unwrap();
++                )
++                .unwrap();
+             }
+ 
+             AnnotationShape::Pen { points } => {
+@@ -74,32 +93,28 @@ impl Annotation {
+                 let min_y = points.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+                 let max_x = points.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
+                 let max_y = points.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+-                
+-                self.bbox = Rect::from_ltrb(
+-                    min_x, 
+-                    min_y, 
+-                    max_x, 
+-                    max_y 
+-                ).unwrap();
++
++                self.bbox = Rect::from_ltrb(min_x, min_y, max_x, max_y).unwrap();
+             }
+-            
+-            AnnotationShape::Text {..} => {} // nothing, text will use its own function to update bbox 
+-        }    
++
++            AnnotationShape::Text { .. } => {} // nothing, text will use its own function to update bbox
++        }
+     }
+ 
+     pub fn last_segment_bbox(&self) -> Rect {
+         match &self.shape {
+-            // to render only new pixels from pen, insted of rendering the whole rectangle 
++            // to render only new pixels from pen, insted of rendering the whole rectangle
+             AnnotationShape::Pen { points } if points.len() >= 2 => {
+                 let from = points[points.len() - 2];
+-                let to   = points[points.len() - 1];
++                let to = points[points.len() - 1];
+ 
+                 Rect::from_ltrb(
+                     from.0.min(to.0),
+                     from.1.min(to.1),
+                     from.0.max(to.0),
+                     from.1.max(to.1),
+-                ).unwrap()
++                )
++                .unwrap()
+             }
+             _ => self.bbox,
+         }
+@@ -107,19 +122,25 @@ impl Annotation {
+ 
+     pub fn translate_mut(&mut self, dx: f32, dy: f32) {
+         match &mut self.shape {
+-            AnnotationShape::NumeratedArrow { start, end, .. } |
+-            AnnotationShape::Arrow { start, end } |
+-            AnnotationShape::Rectangle { start, end } |
+-            AnnotationShape::Circle { start, end } |
+-            AnnotationShape::Line { start, end } => {
+-                start.0 += dx; start.1 += dy;
+-                end.0   += dx; end.1   += dy;
++            AnnotationShape::NumeratedArrow { start, end, .. }
++            | AnnotationShape::Arrow { start, end }
++            | AnnotationShape::Rectangle { start, end }
++            | AnnotationShape::Circle { start, end }
++            | AnnotationShape::Line { start, end } => {
++                start.0 += dx;
++                start.1 += dy;
++                end.0 += dx;
++                end.1 += dy;
+             }
+             AnnotationShape::Pen { points } => {
+-                for p in points.iter_mut() { p.0 += dx; p.1 += dy; }
++                for p in points.iter_mut() {
++                    p.0 += dx;
++                    p.1 += dy;
++                }
+             }
+             AnnotationShape::Text { start, .. } => {
+-                start.0 += dx; start.1 += dy;
++                start.0 += dx;
++                start.1 += dy;
+             }
+         }
+         // NOTE: text bbox size depends on font metrics (not available here)
+@@ -128,14 +149,17 @@ impl Annotation {
+         match &self.shape {
+             AnnotationShape::Text { .. } => {
+                 self.bbox = Rect::from_ltrb(
+-                    self.bbox.left()   + dx, self.bbox.top()    + dy,
+-                    self.bbox.right()  + dx, self.bbox.bottom() + dy,
+-                ).unwrap_or(self.bbox);
++                    self.bbox.left() + dx,
++                    self.bbox.top() + dy,
++                    self.bbox.right() + dx,
++                    self.bbox.bottom() + dy,
++                )
++                .unwrap_or(self.bbox);
+             }
+             _ => self.update_bbox(),
+         }
+     }
+-    
++
+     pub fn translate(&self, dx: f32, dy: f32) -> Annotation {
+         let mut result = self.clone();
+         result.translate_mut(dx, dy);
+@@ -145,36 +169,56 @@ impl Annotation {
+     pub fn resize_to_bbox(&self, new_bbox: SignedRect) -> Annotation {
+         let orig = self.bbox;
+ 
+-        let sx = if orig.width()  > 0.0 { new_bbox.width()  / orig.width()  } else { 1.0 };
+-        let sy = if orig.height() > 0.0 { new_bbox.height() / orig.height() } else { 1.0 };
++        let sx = if orig.width() > 0.0 {
++            new_bbox.width() / orig.width()
++        } else {
++            1.0
++        };
++        let sy = if orig.height() > 0.0 {
++            new_bbox.height() / orig.height()
++        } else {
++            1.0
++        };
+ 
+         let remap = |p: (f32, f32)| -> (f32, f32) {
+             (
+                 new_bbox.left + (p.0 - orig.left()) * sx,
+-                new_bbox.top  + (p.1 - orig.top())  * sy,
++                new_bbox.top + (p.1 - orig.top()) * sy,
+             )
+         };
+ 
+         let shape = match &self.shape {
+-            AnnotationShape::NumeratedArrow { start, end, number } => AnnotationShape::NumeratedArrow {
+-                start: remap(*start), end: remap(*end), number: *number
+-            },
++            AnnotationShape::NumeratedArrow { start, end, number } => {
++                AnnotationShape::NumeratedArrow {
++                    start: remap(*start),
++                    end: remap(*end),
++                    number: *number,
++                }
++            }
+             AnnotationShape::Arrow { start, end } => AnnotationShape::Arrow {
+-                start: remap(*start), end: remap(*end),
++                start: remap(*start),
++                end: remap(*end),
+             },
+             AnnotationShape::Rectangle { start, end } => AnnotationShape::Rectangle {
+-                start: remap(*start), end: remap(*end),
++                start: remap(*start),
++                end: remap(*end),
+             },
+             AnnotationShape::Circle { start, end } => AnnotationShape::Circle {
+-                start: remap(*start), end: remap(*end),
++                start: remap(*start),
++                end: remap(*end),
+             },
+             AnnotationShape::Line { start, end } => AnnotationShape::Line {
+-                start: remap(*start), end: remap(*end),
++                start: remap(*start),
++                end: remap(*end),
+             },
+             AnnotationShape::Pen { points } => AnnotationShape::Pen {
+                 points: points.iter().map(|p| remap(*p)).collect(),
+             },
+-            AnnotationShape::Text { start, content, font_size } => {
++            AnnotationShape::Text {
++                start,
++                content,
++                font_size,
++            } => {
+                 // NOTE: bbox after this is stale, must call update_text_bbox() afterwards
+                 // because text dimensions require FontSystem
+                 // font_size scales by the axis with larger relative change
+@@ -188,7 +232,10 @@ impl Annotation {
+             }
+         };
+ 
+-        let mut result = Annotation { shape, ..self.clone() };
++        let mut result = Annotation {
++            shape,
++            ..self.clone()
++        };
+         result.update_bbox();
+         result
+     }
+@@ -196,38 +243,35 @@ impl Annotation {
+     pub fn initial_hit_test(&self, coordinates: (f64, f64)) -> bool {
+         // TODO: separate for pen
+         let (x, y) = (coordinates.0 as f32, coordinates.1 as f32);
+-        let pad = HANDLE_PAD as f32; 
++        let pad = HANDLE_PAD as f32;
+ 
+-        x >= self.bbox.left() - pad && 
+-        x <= self.bbox.right() + pad && 
+-        y >= self.bbox.top() - pad && 
+-        y <= self.bbox.bottom() + pad
++        x >= self.bbox.left() - pad
++            && x <= self.bbox.right() + pad
++            && y >= self.bbox.top() - pad
++            && y <= self.bbox.bottom() + pad
+     }
+ 
+     pub fn damage_bbox(&self, is_selected: bool) -> Rect {
+         if is_selected {
+-            let pad = HANDLE_PAD as f32;                // if its selected we need to add handlers padding
++            let pad = HANDLE_PAD as f32; // if its selected we need to add handlers padding
+             Rect::from_ltrb(
+                 self.bbox.left() - pad,
+                 self.bbox.top() - pad,
+                 self.bbox.right() + pad,
+                 self.bbox.bottom() + pad,
+-            ).unwrap_or(self.bbox)
++            )
++            .unwrap_or(self.bbox)
+         } else {
+             self.bbox
+         }
+     }
+ }
+ 
+-
+-// to not repeat the same code in tools/pick.rs, and tools/text.rs 
++// to not repeat the same code in tools/pick.rs, and tools/text.rs
+ // (they both can select and drag, tho text does that only with text)
+ // utils.rs или editor/drag.rs
+ 
+-pub fn begin_drag_for_annotation(
+-    state: &mut EditorState,
+-    idx: usize,
+-) {
++pub fn begin_drag_for_annotation(state: &mut EditorState, idx: usize) {
+     let ann = &state.annotations[idx];
+     let out_pad = (HANDLE_PAD / 2.0) as f32;
+     let bbox = ann.bbox;
+@@ -237,7 +281,8 @@ pub fn begin_drag_for_annotation(
+         bbox.top() - out_pad,
+         bbox.right() + out_pad,
+         bbox.bottom() + out_pad,
+-    ).unwrap_or(bbox);
++    )
++    .unwrap_or(bbox);
+ 
+     let handle = hit_test_rect_handle(&visual_bbox, state.pointer.global);
+ 
+@@ -251,29 +296,29 @@ pub fn begin_drag_for_annotation(
+ 
+ pub fn commit_drag_if_changed(state: &mut EditorState) {
+     // mouse up > commit to undo only if something actually changed
+-    if let Some(drag) = &state.ann_drag {
+-        if let Some(idx) = state.selected_annotation {
+-            let actually_changed = !matches!(drag.handle, SelectionHandle::None)
+-                && state.annotations[idx].bbox != drag.orig.bbox;
+-
+-            if actually_changed {
+-                // annotations[idx] already has the new position from on_move
+-                // we reconstruct the pre-drag snapshot using drag.orig
+-                let pre_drag: Vec<_> = state
+-                    .annotations
+-                    .iter()
+-                    .enumerate()
+-                    .map(|(i, ann)| {
+-                        if i == idx {
+-                            drag.orig.clone()
+-                        } else {
+-                            ann.clone()
+-                        }
+-                    })
+-                    .collect();
+-                state.undo_stack.push(pre_drag);
+-                state.redo_stack.clear();
+-            }
++    if let Some(drag) = &state.ann_drag
++        && let Some(idx) = state.selected_annotation
++    {
++        let actually_changed = !matches!(drag.handle, SelectionHandle::None)
++            && state.annotations[idx].bbox != drag.orig.bbox;
++
++        if actually_changed {
++            // annotations[idx] already has the new position from on_move
++            // we reconstruct the pre-drag snapshot using drag.orig
++            let pre_drag: Vec<_> = state
++                .annotations
++                .iter()
++                .enumerate()
++                .map(|(i, ann)| {
++                    if i == idx {
++                        drag.orig.clone()
++                    } else {
++                        ann.clone()
++                    }
++                })
++                .collect();
++            state.undo_stack.push(pre_drag);
++            state.redo_stack.clear();
+         }
+     }
+     state.ann_drag = None;
+@@ -285,11 +330,17 @@ pub fn apply_annotation_drag(state: &mut EditorState, global: (f64, f64)) {
+         None => return,
+     };
+ 
+-    if matches!(handle, SelectionHandle::None) { return; }
++    if matches!(handle, SelectionHandle::None) {
++        return;
++    }
+ 
+-    let Some(idx) = state.selected_annotation else { return };
++    let Some(idx) = state.selected_annotation else {
++        return;
++    };
+ 
+-    state.damage_rects.push(state.annotations[idx].damage_bbox(true));
++    state
++        .damage_rects
++        .push(state.annotations[idx].damage_bbox(true));
+ 
+     match handle {
+         SelectionHandle::Move => {
+@@ -311,7 +362,11 @@ pub fn apply_annotation_drag(state: &mut EditorState, global: (f64, f64)) {
+                 let ann_id = state.annotations[idx].id;
+                 let editor = state.text_editors.get_mut(&ann_id);
+                 if let Some(ed) = editor {
+-                    update_text_bbox_inline(&mut state.annotations[idx], ed, &mut state.font_system);
++                    update_text_bbox_inline(
++                        &mut state.annotations[idx],
++                        ed,
++                        &mut state.font_system,
++                    );
+                 }
+             } else {
+                 // shape resize: always from orig + total delta to avoid accumulated error
+@@ -329,7 +384,9 @@ pub fn apply_annotation_drag(state: &mut EditorState, global: (f64, f64)) {
+         }
+     }
+ 
+-    state.damage_rects.push(state.annotations[idx].damage_bbox(true));
++    state
++        .damage_rects
++        .push(state.annotations[idx].damage_bbox(true));
+     state.annotations_dirty = true;
+ 
+     if let Some(drag) = state.ann_drag.as_mut() {
+@@ -353,18 +410,16 @@ fn apply_shape_resize_from_orig(
+         orig.bbox.top() - out_pad,
+         orig.bbox.right() + out_pad,
+         orig.bbox.bottom() + out_pad,
+-    ).unwrap_or(orig.bbox);
++    )
++    .unwrap_or(orig.bbox);
+ 
+-    let new_visual_bbox = apply_handle_drag(
+-        &visual_bbox,
+-        handle,
+-        (total_dx as f64, total_dy as f64),
+-    );
++    let new_visual_bbox =
++        apply_handle_drag(&visual_bbox, handle, (total_dx as f64, total_dy as f64));
+ 
+     let clean_bbox = SignedRect {
+-        left:   new_visual_bbox.left   + out_pad,
+-        top:    new_visual_bbox.top    + out_pad,
+-        right:  new_visual_bbox.right  - out_pad,
++        left: new_visual_bbox.left + out_pad,
++        top: new_visual_bbox.top + out_pad,
++        right: new_visual_bbox.right - out_pad,
+         bottom: new_visual_bbox.bottom - out_pad,
+     };
+ 
+@@ -379,27 +434,36 @@ fn apply_text_resize_incremental(
+     prev: (f64, f64),
+     global: (f64, f64),
+ ) {
+-    let AnnotationShape::Text { font_size, start, .. } = &mut ann.shape else { return };
++    let AnnotationShape::Text {
++        font_size, start, ..
++    } = &mut ann.shape
++    else {
++        return;
++    };
+     let bbox = ann.bbox;
+ 
+     let (anchor_x, anchor_y) = match handle {
+-        SelectionHandle::TopLeft     => (bbox.right(),  bbox.bottom()),
+-        SelectionHandle::TopRight    => (bbox.left(),   bbox.bottom()),
+-        SelectionHandle::BottomLeft  => (bbox.right(),  bbox.top()),
+-        SelectionHandle::BottomRight => (bbox.left(),   bbox.top()),
++        SelectionHandle::TopLeft => (bbox.right(), bbox.bottom()),
++        SelectionHandle::TopRight => (bbox.left(), bbox.bottom()),
++        SelectionHandle::BottomLeft => (bbox.right(), bbox.top()),
++        SelectionHandle::BottomRight => (bbox.left(), bbox.top()),
+         _ => return,
+     };
+ 
+     let prev_dx = prev.0 as f32 - anchor_x;
+     let prev_dy = prev.1 as f32 - anchor_y;
+-    let new_dx  = global.0 as f32 - anchor_x;
+-    let new_dy  = global.1 as f32 - anchor_y;
++    let new_dx = global.0 as f32 - anchor_x;
++    let new_dy = global.1 as f32 - anchor_y;
+ 
+     let prev_dist = (prev_dx.powi(2) + prev_dy.powi(2)).sqrt().max(1.0);
+-    let new_dist  = (new_dx.powi(2)  + new_dy.powi(2)).sqrt();
++    let new_dist = (new_dx.powi(2) + new_dy.powi(2)).sqrt();
+ 
+     let dot = prev_dx * new_dx + prev_dy * new_dy;
+-    let scale = if dot <= 0.0 { 0.0 } else { new_dist / prev_dist };
++    let scale = if dot <= 0.0 {
++        0.0
++    } else {
++        new_dist / prev_dist
++    };
+ 
+     let new_font_size = (*font_size * scale).clamp(6.0, 300.0);
+     let applied_scale = new_font_size / *font_size;
+@@ -408,4 +472,4 @@ fn apply_text_resize_incremental(
+     start.1 = anchor_y + (start.1 - anchor_y) * applied_scale;
+     *font_size = new_font_size;
+     // bbox updated in apply_annotation_drag via update_text_bbox
+-}
+\ No newline at end of file
++}
+diff --git a/src/types/capture.rs b/src/types/capture.rs
+index c17f257..a0e75cb 100644
+--- a/src/types/capture.rs
++++ b/src/types/capture.rs
+@@ -4,8 +4,8 @@ pub struct Placement {
+     pub position: (i32, i32),
+ }
+ // Wayland outputs
+-use wayland_client::protocol::wl_output;
+ use smithay_client_toolkit::output::OutputInfo as SctkOutputInfo;
++use wayland_client::protocol::wl_output;
+ 
+ #[derive(Debug, Clone)]
+ pub struct Output {
+@@ -13,7 +13,6 @@ pub struct Output {
+     pub info: SctkOutputInfo,
+ }
+ 
+-
+ #[derive(Debug, Clone)]
+ pub enum SourceType {
+     Monitor = 1,
+diff --git a/src/types/events.rs b/src/types/events.rs
+index 3b1708f..6264e47 100644
+--- a/src/types/events.rs
++++ b/src/types/events.rs
+@@ -1,7 +1,7 @@
+ #[derive(Debug, Clone, Copy)]
+ pub enum MouseButton {
+     Left,
+-    Right, 
++    Right,
+     Middle,
+ }
+ 
+@@ -29,12 +29,12 @@ impl PointerState {
+ 
+ #[derive(Debug, Clone)]
+ pub enum OverlayEvent {
+-    PointerMove { monitor_idx: usize, x: f64, y: f64},
+-    PointerButton {button: MouseButton, pressed : bool},
++    PointerMove { monitor_idx: usize, x: f64, y: f64 },
++    PointerButton { button: MouseButton, pressed: bool },
+     EscapePressed,
+     SaveToClipboard,
+     Tick,
+-    Redo, 
++    Redo,
+     Undo,
+     TextInput(char),
+     KeyPress(SpecialKey),
+@@ -49,8 +49,8 @@ pub enum SpecialKey {
+     Right,
+     Home,
+     End,
+-    Delete, 
++    Delete,
+     Up,
+     Down,
+     KeyA,
+-}
+\ No newline at end of file
++}
+diff --git a/src/types/text.rs b/src/types/text.rs
+index cd882b5..463f8f8 100644
+--- a/src/types/text.rs
++++ b/src/types/text.rs
+@@ -1,11 +1,11 @@
+-use cosmic_text::{Buffer};
++use cosmic_text::Buffer;
+ 
+ pub struct TextState {
+-    pub buffer: Buffer,   
+-    pub dirty: bool,      
++    pub buffer: Buffer,
++    pub dirty: bool,
+ }
+ 
+ pub struct TextEditState {
+-    pub annotation_id: u64, 
+-    pub cursor: usize,      
+-}
+\ No newline at end of file
++    pub annotation_id: u64,
++    pub cursor: usize,
++}
+diff --git a/src/types/toolbar.rs b/src/types/toolbar.rs
+index 577d86a..b7b0fb5 100644
+--- a/src/types/toolbar.rs
++++ b/src/types/toolbar.rs
+@@ -60,6 +60,12 @@ pub struct Toolbar {
+     pub last_tick: Option<Instant>,
+ }
+ 
++impl Default for Toolbar {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
+ impl Toolbar {
+     pub fn new() -> Self {
+         let mut toolbar = Self {
+@@ -84,7 +90,7 @@ impl Toolbar {
+             last_tick: None,
+         };
+ 
+-        toolbar.size.0 = toolbar.toolbar_width() as f32;
++        toolbar.size.0 = toolbar.toolbar_width();
+         toolbar.size.1 = TOOLBAR_HEIGHT;
+ 
+         toolbar
+diff --git a/src/utils.rs b/src/utils.rs
+index 8ff9813..4cc5466 100644
+--- a/src/utils.rs
++++ b/src/utils.rs
+@@ -1,15 +1,16 @@
+-use tiny_skia::Rect;
+-use tiny_skia::Pixmap;
++use crate::types::{HANDLE_PAD, Placement, SelectionHandle, SignedRect};
+ use std::path::PathBuf;
+-use crate::types::{Placement, SelectionHandle, SignedRect, HANDLE_PAD};
+-
++use tiny_skia::Pixmap;
++use tiny_skia::Rect;
+ 
+ pub fn make_rect(a: (f64, f64), b: (f64, f64)) -> Option<Rect> {
+     let x = a.0.min(b.0) as f32;
+     let y = a.1.min(b.1) as f32;
+     let w = (a.0 - b.0).abs() as f32;
+     let h = (a.1 - b.1).abs() as f32;
+-    if w < 1.0 || h < 1.0 { return None; }
++    if w < 1.0 || h < 1.0 {
++        return None;
++    }
+     Rect::from_xywh(x, y, w, h)
+ }
+ 
+@@ -26,35 +27,32 @@ pub fn global_point_to_local(
+         .find_map(|(idx, p)| {
+             let (px, py) = p.position;
+             let (w, h) = p.size;
+-            let inside = gx >= px as f64 && gx < (px + w) as f64
+-                && gy >= py as f64 && gy < (py + h) as f64;
+-            inside.then(|| (idx, gx - px as f64, gy - py as f64))
++            let inside =
++                gx >= px as f64 && gx < (px + w) as f64 && gy >= py as f64 && gy < (py + h) as f64;
++            inside.then_some((idx, gx - px as f64, gy - py as f64))
+         })
+         .unwrap_or((fallback_idx, fallback_local.0, fallback_local.1))
+ }
+ 
+-
+-
+ pub fn encode_png(pixmap: &Pixmap) -> Vec<u8> {
+-    use image::codecs::png::{PngEncoder, CompressionType, FilterType};
+     use image::ImageEncoder;
++    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+ 
+     let mut png_bytes = Vec::new();
+     let mut rgba = pixmap.data().to_vec();
+     for px in rgba.chunks_exact_mut(4) {
+         px.swap(0, 2);
+     }
+-    let encoder = PngEncoder::new_with_quality(
+-        &mut png_bytes,
+-        CompressionType::Fast,
+-        FilterType::Adaptive,
+-    );
+-    encoder.write_image(
+-        &rgba,
+-        pixmap.width(),
+-        pixmap.height(),
+-        image::ExtendedColorType::Rgba8,
+-    ).unwrap();
++    let encoder =
++        PngEncoder::new_with_quality(&mut png_bytes, CompressionType::Fast, FilterType::Adaptive);
++    encoder
++        .write_image(
++            &rgba,
++            pixmap.width(),
++            pixmap.height(),
++            image::ExtendedColorType::Rgba8,
++        )
++        .unwrap();
+ 
+     png_bytes
+ }
+@@ -63,31 +61,32 @@ pub fn save_to_file(png_data: &[u8]) -> Result<PathBuf, Box<dyn std::error::Erro
+     let now = chrono::Local::now();
+ 
+     let dir = dirs::picture_dir()
+-        .unwrap_or_else(|| PathBuf::from("~/Pictures"))             // hardcoded TOFIX
++        .unwrap_or_else(|| PathBuf::from("~/Pictures")) // hardcoded TOFIX
+         .join("screenshots")
+         .join(now.format("%Y-%m").to_string());
+-    
++
+     std::fs::create_dir_all(&dir)?;
+ 
+-    let filename = now.format("%Y-%m-%d_%H-%M.png").to_string();    // hardcoded TOFIX
++    let filename = now.format("%Y-%m-%d_%H-%M.png").to_string(); // hardcoded TOFIX
+     let path = dir.join(filename);
+ 
+     std::fs::write(&path, png_data)?;
+     Ok(path)
+-
+ }
+ 
+-// to render necessary monitors 
++// to render necessary monitors
+ pub fn get_overlapping_monitors(selection: &Rect, placements: &[crate::types::Placement]) -> u32 {
+     let mut mask = 0u32;
+     for (i, p) in placements.iter().enumerate() {
+         let mx = p.position.0 as f32;
+         let my = p.position.1 as f32;
+-        let overlaps = selection.left()  < mx + p.size.0 as f32
+-                    && selection.right() > mx
+-                    && selection.top()   < my + p.size.1 as f32
+-                    && selection.bottom()> my;
+-        if overlaps { mask |= 1 << i; }
++        let overlaps = selection.left() < mx + p.size.0 as f32
++            && selection.right() > mx
++            && selection.top() < my + p.size.1 as f32
++            && selection.bottom() > my;
++        if overlaps {
++            mask |= 1 << i;
++        }
+     }
+     mask
+ }
+@@ -96,8 +95,10 @@ pub fn get_overlapping_monitors(selection: &Rect, placements: &[crate::types::Pl
+ pub fn hit_test_rect_handle(sel: &Rect, pos: (f64, f64)) -> SelectionHandle {
+     let (x, y) = pos;
+     let (l, r, t, b) = (
+-        sel.left() as f64, sel.right() as f64,
+-        sel.top() as f64,  sel.bottom() as f64,
++        sel.left() as f64,
++        sel.right() as f64,
++        sel.top() as f64,
++        sel.bottom() as f64,
+     );
+     let w = sel.width() as f64;
+     let h = sel.height() as f64;
+@@ -109,28 +110,28 @@ pub fn hit_test_rect_handle(sel: &Rect, pos: (f64, f64)) -> SelectionHandle {
+ 
+     // Top-Left
+     let in_tl_horizontal = (y - t).abs() <= half_pad && x >= l - half_pad && x <= l + corner_w;
+-    let in_tl_vertical   = (x - l).abs() <= half_pad && y >= t - half_pad && y <= t + corner_h;
++    let in_tl_vertical = (x - l).abs() <= half_pad && y >= t - half_pad && y <= t + corner_h;
+     if in_tl_horizontal || in_tl_vertical {
+         return SelectionHandle::TopLeft;
+     }
+ 
+     // Top-Right
+     let in_tr_horizontal = (y - t).abs() <= half_pad && x >= r - corner_w && x <= r + half_pad;
+-    let in_tr_vertical   = (x - r).abs() <= half_pad && y >= t - half_pad && y <= t + corner_h;
++    let in_tr_vertical = (x - r).abs() <= half_pad && y >= t - half_pad && y <= t + corner_h;
+     if in_tr_horizontal || in_tr_vertical {
+         return SelectionHandle::TopRight;
+     }
+ 
+     // Bottom-Left
+     let in_bl_horizontal = (y - b).abs() <= half_pad && x >= l - half_pad && x <= l + corner_w;
+-    let in_bl_vertical   = (x - l).abs() <= half_pad && y >= b - corner_h && y <= b + half_pad;
++    let in_bl_vertical = (x - l).abs() <= half_pad && y >= b - corner_h && y <= b + half_pad;
+     if in_bl_horizontal || in_bl_vertical {
+         return SelectionHandle::BottomLeft;
+     }
+ 
+     // Bottom-Right
+     let in_br_horizontal = (y - b).abs() <= half_pad && x >= r - corner_w && x <= r + half_pad;
+-    let in_br_vertical   = (x - r).abs() <= half_pad && y >= b - corner_h && y <= b + half_pad;
++    let in_br_vertical = (x - r).abs() <= half_pad && y >= b - corner_h && y <= b + half_pad;
+     if in_br_horizontal || in_br_vertical {
+         return SelectionHandle::BottomRight;
+     }
+@@ -159,27 +160,50 @@ pub fn hit_test_rect_handle(sel: &Rect, pos: (f64, f64)) -> SelectionHandle {
+     SelectionHandle::None
+ }
+ 
+-
+-pub fn apply_handle_drag(
+-    orig: &Rect,
+-    handle: SelectionHandle,
+-    delta: (f64, f64),
+-) -> SignedRect {
++pub fn apply_handle_drag(orig: &Rect, handle: SelectionHandle, delta: (f64, f64)) -> SignedRect {
+     let (dx, dy) = (delta.0 as f32, delta.1 as f32);
+-    let (mut l, mut r, mut t, mut b) = (
+-        orig.left(), orig.right(), orig.top(), orig.bottom(),
+-    );
++    let (mut l, mut r, mut t, mut b) = (orig.left(), orig.right(), orig.top(), orig.bottom());
+     match handle {
+-        SelectionHandle::TopLeft     => { l += dx; t += dy; }
+-        SelectionHandle::Top         => { t += dy; }
+-        SelectionHandle::TopRight    => { r += dx; t += dy; }
+-        SelectionHandle::Left        => { l += dx; }
+-        SelectionHandle::Right       => { r += dx; }
+-        SelectionHandle::BottomLeft  => { l += dx; b += dy; }
+-        SelectionHandle::Bottom      => { b += dy; }
+-        SelectionHandle::BottomRight => { r += dx; b += dy; }
+-        SelectionHandle::Move        => { l += dx; r += dx; t += dy; b += dy; }
+-        SelectionHandle::None        => {}
++        SelectionHandle::TopLeft => {
++            l += dx;
++            t += dy;
++        }
++        SelectionHandle::Top => {
++            t += dy;
++        }
++        SelectionHandle::TopRight => {
++            r += dx;
++            t += dy;
++        }
++        SelectionHandle::Left => {
++            l += dx;
++        }
++        SelectionHandle::Right => {
++            r += dx;
++        }
++        SelectionHandle::BottomLeft => {
++            l += dx;
++            b += dy;
++        }
++        SelectionHandle::Bottom => {
++            b += dy;
++        }
++        SelectionHandle::BottomRight => {
++            r += dx;
++            b += dy;
++        }
++        SelectionHandle::Move => {
++            l += dx;
++            r += dx;
++            t += dy;
++            b += dy;
++        }
++        SelectionHandle::None => {}
++    }
++    SignedRect {
++        left: l,
++        top: t,
++        right: r,
++        bottom: b,
+     }
+-    SignedRect { left: l, top: t, right: r, bottom: b }
+-}
+\ No newline at end of file
++}
